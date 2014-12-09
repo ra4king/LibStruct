@@ -58,12 +58,9 @@ public class LightArea {
 						newLitArea.add(litArea.get(i));
 					}
 
-					// swap
-					TriangleList tmp = litArea;
-					this.litArea = litArea = newLitArea;
-					newLitArea = tmp;
+					this.litArea = newLitArea;
 
-					return newLitArea;
+					return litArea;
 				}
 			}
 		}
@@ -78,11 +75,8 @@ public class LightArea {
 			}
 		}
 
-		// swap
-		TriangleList tmp = litArea;
-		this.litArea = litArea = newLitArea;
-		newLitArea = tmp;
+		this.litArea = newLitArea;
 
-		return newLitArea;
+		return litArea;
 	}
 }
