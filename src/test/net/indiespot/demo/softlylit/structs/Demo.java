@@ -16,10 +16,7 @@ import org.lwjgl.opengl.Display;
 import org.lwjgl.opengl.DisplayMode;
 import org.lwjgl.opengl.PixelFormat;
 
-import test.net.indiespot.demo.softlylit.structs.support.LineList;
 import test.net.indiespot.demo.softlylit.structs.support.OpenGL;
-import test.net.indiespot.demo.softlylit.structs.support.PointList;
-import test.net.indiespot.demo.softlylit.structs.support.TriangleList;
 import static org.lwjgl.opengl.ARBShaderObjects.glUseProgramObjectARB;
 import static org.lwjgl.opengl.GL11.*;
 import static org.lwjgl.opengl.GL12.*;
@@ -169,6 +166,7 @@ public class Demo {
 
 				Random rndm = new Random();
 
+				int tris=0;
 				glBegin(GL_TRIANGLES);
 				{
 					tmp.clear();
@@ -205,11 +203,13 @@ public class Demo {
 							glVertex2f(tri.b.x, tri.b.y);
 							glVertex2f(tri.c.x, tri.c.y);
 						}
+						tris+=area. litArea.size();
 					}
 				}
 
 				glEnd();
 				glDisable(GL_BLEND);
+				System.out.println(tris);
 			}
 			glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
