@@ -9,126 +9,108 @@ import java.util.NoSuchElementException;
 import net.indiespot.struct.transform.StructEnv;
 
 public class StructMemory {
-	public static final boolean CHECK_ALLOC_OVERFLOW = StructEnv.SAFETY_FIRST || false;
-	public static final boolean CHECK_MEMORY_ACCESS_REGION = StructEnv.SAFETY_FIRST || false;
-	public static final boolean CHECK_POINTER_ALIGNMENT = StructEnv.SAFETY_FIRST || false;
-	public static final boolean CHECK_FIELD_ASSIGNMENT = StructEnv.SAFETY_FIRST || false;
-	public static final boolean CHECK_SOURCECODE = StructEnv.SAFETY_FIRST || true;
-
-	private static final boolean manually_fill_and_copy = true;
-
-	public static int[] emptyArray(int length) {
-		return new int[length];
+	public static long[] nullArray(int length) {
+		return new long[length];
 	}
 
 	// ---
 
-	public static int allocate(int sizeof, StructAllocationStack stack) {
-		int handle = stack.allocate(sizeof);
-
-		if (manually_fill_and_copy) {
-			fillMemoryByWord(handle, bytes2words(sizeof), 0x00000000);
-		} else {
-			StructUnsafe.UNSAFE.setMemory(//
-					handle2pointer(handle),//
-					sizeof,//
-					(byte) 0x00);
-		}
-
+	public static long calloc(StructAllocationStack stack, int sizeof, int alignment) {
+		long handle = stack.allocate(sizeof, alignment);
+		fillMemoryByWord(handle, bytes2words(sizeof), 0x00000000);
 		return handle;
 	}
 
-	public static int allocateSkipZeroFill(int sizeof, StructAllocationStack stack) {
-		return stack.allocate(sizeof);
+	public static long malloc(StructAllocationStack stack, int sizeof, int alignment) {
+		return stack.allocate(sizeof, alignment);
 	}
 
-	public static int allocateCopy(int srcHandle, int sizeof) {
-		int dstHandle = StructThreadLocalStack.getStack().allocate(sizeof);
-
-		if (manually_fill_and_copy) {
-			copyMemoryByWord(srcHandle, dstHandle, bytes2words(sizeof));
-		} else {
-			StructUnsafe.UNSAFE.copyMemory(//
-					handle2pointer(srcHandle),//
-					handle2pointer(dstHandle),//
-					sizeof);
-		}
-
+	public static long allocateCopy(long srcHandle, int sizeof, int alignment) {
+		long dstHandle = StructThreadLocalStack.getStack().allocate(sizeof, alignment);
+		copyMemoryByWord(srcHandle, dstHandle, bytes2words(sizeof));
 		return dstHandle;
 	}
 
-	public static int[] allocateArray(int length, int sizeof, StructAllocationStack stack) {
+	public static long[] allocateArray(StructAllocationStack stack, int length, int sizeof, int alignment) {
 		int sizeofWords = bytes2words(sizeof);
-		int handle = stack.allocate(sizeof * length);
+		long handle = stack.allocate(sizeof * length, alignment);
 		fillMemoryByWord(handle, sizeofWords * length, 0x00000000);
-		int[] arr = new int[length];
-		for (int i = 0; i < arr.length; i++)
-			arr[i] = handle + i * sizeofWords;
-		return arr;
+		return createPointerArray(handle, sizeof, length);
 	}
 
-	public static int[] mapBuffer(int sizeof, ByteBuffer bb) {
-		int sizeofWords = bytes2words(sizeof);
+	public static long[] mapBuffer(int sizeof, ByteBuffer bb) {
 		long addr = StructUnsafe.getBufferBaseAddress(bb) + bb.position();
 		int count = bb.remaining() / sizeof;
 		if (count == 0)
 			throw new IllegalStateException("no usable space in buffer");
-		int handle = pointer2handle(addr);
-		int[] arr = new int[count];
-		for (int i = 0; i < arr.length; i++)
-			arr[i] = handle + i * sizeofWords;
-		return arr;
+		return createPointerArray(addr, sizeof, count);
 	}
 
-	public static int[] mapBuffer(int sizeof, ByteBuffer bb, int stride, int offset) {
+	public static long[] mapBuffer(int sizeof, ByteBuffer bb, int stride, int offset) {
 		if (offset < 0 || offset + sizeof > stride || (offset % 4) != 0 || (stride % 4) != 0)
 			throw new IllegalStateException();
 
-		int offsetWords = bytes2words(offset);
-		int strideWords = bytes2words(stride);
-		long addr = StructUnsafe.getBufferBaseAddress(bb) + bb.position();
+		long addr = StructUnsafe.getBufferBaseAddress(bb) + bb.position() + offset;
 		int count = bb.remaining() / stride;
 		if (count == 0)
 			throw new IllegalStateException("no usable space in buffer");
-		int handle = pointer2handle(addr);
-		int[] arr = new int[count];
-		for (int i = 0; i < arr.length; i++)
-			arr[i] = handle + offsetWords + i * strideWords;
-		return arr;
+		return createPointerArray(addr, stride, count);
 	}
 
-	public static void copy(int sizeof, int srcHandle, int dstHandle) {
+	public static final int JVMWORD_ALIGNMENT = 4;
+	public static final int CACHELINE_ALIGNMENT = 64;
+	public static final int PAGE_ALIGNMENT = 4096;
+
+	public static final int DEFAULT_ALIGNMENT = JVMWORD_ALIGNMENT;
+
+	public static void copy(int sizeof, long srcHandle, long dstHandle) {
 		copyMemoryByWord(srcHandle, dstHandle, bytes2words(sizeof));
 	}
 
-	public static void swap(int sizeof, int srcHandle, int dstHandle) {
+	public static void copy(int sizeof, long srcHandle, long dstHandle, int count) {
+		copyMemoryByWord(srcHandle, dstHandle, bytes2words(sizeof) * count);
+	}
+
+	public static void swap(int sizeof, long srcHandle, long dstHandle) {
 		swapMemoryByWord(srcHandle, dstHandle, bytes2words(sizeof));
 	}
 
-	public static int view(int srcHandle, int offset) {
-		return srcHandle + bytes2words(offset);
+	public static long view(long srcHandle, int offset) {
+		return srcHandle + offset;
 	}
 
-	public static int sibling(int srcHandle, int sizeof, int count) {
-		return srcHandle + bytes2words(sizeof) * count;
+	public static long index(long base, int sizeof, int count) {
+		return base + (long) sizeof * count;
 	}
 
-	public static String toString(int handle) {
-		return "<struct@" + handle2pointer(handle) + ">";
+	public static String toString(long handle) {
+		return "<struct@" + handle + ">";
 	}
 
-	public static long alignBufferToWord(ByteBuffer bb) {
-		long addr = StructUnsafe.getBufferBaseAddress(bb) + bb.position();
-		int error = (int) (addr & (4 - 1));
-		if (error != 0) {
-			int advance = 4 - error;
-			bb.position(bb.position() + advance);
-			addr += advance;
-		}
+	public static long alignAddress(long addr, int alignment) {
+		if ((alignment == JVMWORD_ALIGNMENT) & ((addr & 3) == 0))
+			return addr; // common case - performance optimization
+
+		if (StructEnv.SAFETY_FIRST)
+			verifyAlignment(alignment);
+
+		int error = (int) (addr & (alignment - 1));
+		if (error != 0)
+			addr += (alignment - error);
 		return addr;
 	}
 
+	public static void verifyAlignment(int alignment) {
+		if (alignment < JVMWORD_ALIGNMENT)
+			throw new IllegalStateException("alignment must be at least " + JVMWORD_ALIGNMENT);
+		if (Integer.bitCount(alignment) != 1)
+			throw new IllegalStateException("alignment must be a power of two");
+	}
+
 	public static long alignBuffer(ByteBuffer bb, int alignment) {
+		if (StructEnv.SAFETY_FIRST)
+			verifyAlignment(alignment);
+
 		long addr = StructUnsafe.getBufferBaseAddress(bb) + bb.position();
 		int error = (int) (addr % alignment);
 		if (error != 0) {
@@ -139,40 +121,45 @@ public class StructMemory {
 		return addr;
 	}
 
-	public static final void clearMemory(int handle, int sizeof) {
-		fillMemoryByWord(handle, bytes2words(sizeof), 0x00000000);
+	public static final void clearMemory(long addr, int sizeof) {
+		fillMemoryByWord(addr, bytes2words(sizeof), 0x00000000);
 	}
 
-	private static final void fillMemoryByWord(int handle, int count, int value) {
-		long p = handle2pointer(handle);
-		for (int i = 0; i < count; i++) {
-			int off = (i << 2);
-			StructUnsafe.UNSAFE.putInt(p + off, value);
-		}
+	public static final void clearMemory(long addr, long sizeof) {
+		fillMemoryByWord(addr, bytes2words(sizeof), 0x00000000);
 	}
 
-	private static final void copyMemoryByWord(int src, int dst, int count) {
-		long pSrc = handle2pointer(src);
-		long pDst = handle2pointer(dst);
-		for (int i = 0; i < count; i++) {
-			int off = (i << 2);
-			StructUnsafe.UNSAFE.putInt(pDst + off, StructUnsafe.UNSAFE.getInt(pSrc + off));
-		}
+	private static final int word_count_int_shift_limit = Integer.MAX_VALUE >> 2;
+
+	private static final void fillMemoryByWord(long addr, int wordCount, int wordValue) {
+		long base = addr;
+
+		int limit = Math.min(wordCount, word_count_int_shift_limit);
+		for (int i = 0; i < limit; i++)
+			StructUnsafe.UNSAFE.putInt(base + (i << 2), wordValue);
+		for (int i = limit; i < wordCount; i++)
+			StructUnsafe.UNSAFE.putInt(base + ((long) i << 2), wordValue);
 	}
 
-	private static final void swapMemoryByWord(int src, int dst, int count) {
-		long pSrc = handle2pointer(src);
-		long pDst = handle2pointer(dst);
-		for (int i = 0; i < count; i++) {
-			int off = (i << 2);
-			int t = StructUnsafe.UNSAFE.getInt(pSrc + off);
+	private static final void copyMemoryByWord(long pSrc, long pDst, int wordCount) {
+		int limit = Math.min(wordCount, word_count_int_shift_limit);
+		for (int i = 0; i < limit; i++)
+			StructUnsafe.UNSAFE.putInt(pDst + (i << 2), StructUnsafe.UNSAFE.getInt(pSrc + (i << 2)));
+		for (int i = limit; i < wordCount; i++)
+			StructUnsafe.UNSAFE.putInt(pDst + ((long) i << 2), StructUnsafe.UNSAFE.getInt(pSrc + ((long) i << 2)));
+	}
+
+	private static final void swapMemoryByWord(long pSrc, long pDst, int wordCount) {
+		for (int i = 0; i < wordCount; i++) {
+			long off = ((long) i << 2);
+			int tmp = StructUnsafe.UNSAFE.getInt(pSrc + off);
 			StructUnsafe.UNSAFE.putInt(pSrc + off, StructUnsafe.UNSAFE.getInt(pDst + off));
-			StructUnsafe.UNSAFE.putInt(pDst + off, t);
+			StructUnsafe.UNSAFE.putInt(pDst + off, tmp);
 		}
 	}
 
-	public static boolean isValid(int handle) {
-		return StructThreadLocalStack.getStack().isOnStack(handle);
+	public static boolean isValid(long handle) {
+		return StructThreadLocalStack.getStack().isValid(handle);
 	}
 
 	public static void execCheckcastInsn() {
@@ -180,58 +167,56 @@ public class StructMemory {
 	}
 
 	public static int bytes2words(long sizeof) {
-		return (int) (sizeof >> 2);
+		if (StructEnv.SAFETY_FIRST)
+			if (sizeof < 0 || (sizeof & 0x03) != 0x00)
+				throw new IllegalStateException();
+		if (StructEnv.SAFETY_FIRST)
+			if (sizeof > 0x2_FFFF_FFFFL)
+				throw new IllegalStateException();
+		int words = (int) (sizeof >> 2);
+		if (StructEnv.SAFETY_FIRST)
+			if (words < 0)
+				throw new IllegalStateException();
+		return words;
 	}
 
 	public static int bytes2words(int sizeof) {
+		if (StructEnv.SAFETY_FIRST)
+			if (sizeof < 0 || (sizeof & 0x03) != 0x00)
+				throw new IllegalStateException();
 		return sizeof >> 2;
 	}
 
-	public static long handle2pointer(int handle) {
-		return (handle & 0xFFFF_FFFFL) << 2;
+	public static long[] createPointerArray(long pointer, int sizeof, int length) {
+		long[] arr = new long[length];
+		for (int i = 0; i < length; i++)
+			arr[i] = pointer + (long) i * sizeof;
+		return arr;
 	}
 
-	public static int pointer2handle(long pointer) {
-		if (CHECK_POINTER_ALIGNMENT)
-			if (pointer < 0L || (pointer & 3) != 0)
-				throw new IllegalStateException("pointer must be 32-bit aligned");
-		long handle = pointer >> 2;
-		if (handle > 0xFFFF_FFFFL)
-			throw new IllegalStateException("pointer too big to fit in compressed pointer (addressable memory is 16 GB)");
-		return (int) handle;
-	}
-
-	private static void checkHandle(int handle) {
-		if (CHECK_MEMORY_ACCESS_REGION) {
-			if (handle == 0)
-				throw new NullPointerException("null struct");
-			StructAllocationStack stack = StructThreadLocalStack.getStack();
-			if (stack.isOnBlock(handle) && !stack.isOnStack(handle)) {
-				throw new IllegalStackAccessError();
-			}
-		}
-	}
-
-	public static void checkFieldAssignment(int handle) {
-		if (handle == 0)
+	private static void checkPointer(long pointer) {
+		if (pointer == 0)
 			throw new NullPointerException("null struct");
+
 		StructAllocationStack stack = StructThreadLocalStack.getStack();
-		if (stack.isOnBlock(handle) && stack.isOnStack(handle)) {
-			throw new SuspiciousFieldAssignmentError();
-		}
+		if (stack.isInvalid(pointer))
+			throw new IllegalStackAccessError();
 	}
 
-	public static void checkFieldAssignment(int targetHandle, int handle) {
-		if (handle == 0)
-			throw new NullPointerException("null struct");
+	public static void checkFieldAssignment(long assignedHandle, boolean isStatic, String msg) {
+		StructAllocationStack stack = StructThreadLocalStack.getStack();
+		if (stack.isValid(assignedHandle))
+			throw new SuspiciousFieldAssignmentError("\n\t\tError: assigning stack-allocated struct to " + (isStatic ? "static" : "instance") + " field.\n\t\tField: " + msg);
+	}
+
+	public static void checkFieldAssignment(long targetHandle, long assignedHandle, boolean isStatic, String msg) {
 		if (targetHandle == 0)
-			throw new NullPointerException("null struct");
+			throw new NullPointerException("cannot assign field of null struct");
+
 		StructAllocationStack stack = StructThreadLocalStack.getStack();
-		if (stack.isOnBlock(handle) && stack.isOnStack(handle)) {
-			if (!stack.isOnBlock(targetHandle) || !stack.isOnStack(targetHandle)) {
-				throw new SuspiciousFieldAssignmentError();
-			}
-		}
+		if (stack.isValid(assignedHandle))
+			if (!stack.isValid(targetHandle))
+				throw new SuspiciousFieldAssignmentError("\n\t\tError: assigning stack-allocated struct to non-stack-allocated struct field.\n\t\tField: " + msg);
 	}
 
 	static class Holder {
@@ -256,9 +241,8 @@ public class StructMemory {
 
 	public static StructAllocationStack createStructAllocationStack(int bytes) {
 		ByteBuffer buffer = ByteBuffer.allocateDirect(bytes).order(ByteOrder.nativeOrder());
-		long addr = StructMemory.alignBufferToWord(buffer);
-		int handleOffset = StructMemory.pointer2handle(addr);
-		StructAllocationStack stack = new StructAllocationStack(handleOffset, buffer.remaining());
+		long addr = StructMemory.alignBuffer(buffer, JVMWORD_ALIGNMENT);
+		StructAllocationStack stack = new StructAllocationStack(addr, buffer.remaining());
 		synchronized (immortal) {
 			immortal.add(new Holder(buffer, stack));
 		}
@@ -280,187 +264,203 @@ public class StructMemory {
 
 	// boolean (not supported by Unsafe, so we piggyback on putByte, getByte)
 
-	public static final void zput(int handle, boolean value, int fieldOffset) {
-		bput(handle, value ? (byte) 0x01 : (byte) 0x00, fieldOffset);
+	public static final void zput(long addr, boolean value, int fieldOffset) {
+		bput(addr, value ? (byte) 0x01 : (byte) 0x00, fieldOffset);
 	}
 
-	public static final boolean zget(int handle, int fieldOffset) {
-		return bget(handle, fieldOffset) == (byte) 0x01;
+	public static final boolean zget(long addr, int fieldOffset) {
+		return bget(addr, fieldOffset) == (byte) 0x01;
 	}
 
 	// byte
 
-	public static final void bput(int handle, byte value, int fieldOffset) {
-		checkHandle(handle);
-		StructUnsafe.UNSAFE.putByte(handle2pointer(handle) + fieldOffset, value);
+	public static final void bput(long addr, byte value, int fieldOffset) {
+		if (StructEnv.SAFETY_FIRST)
+			checkPointer(addr);
+		StructUnsafe.UNSAFE.putByte(addr + fieldOffset, value);
 	}
 
-	public static final byte bget(int handle, int fieldOffset) {
-		checkHandle(handle);
-		return StructUnsafe.UNSAFE.getByte(handle2pointer(handle) + fieldOffset);
+	public static final byte bget(long addr, int fieldOffset) {
+		if (StructEnv.SAFETY_FIRST)
+			checkPointer(addr);
+		return StructUnsafe.UNSAFE.getByte(addr + fieldOffset);
 	}
 
 	// short
 
-	public static final void sput(int handle, short value, int fieldOffset) {
-		checkHandle(handle);
-		StructUnsafe.UNSAFE.putShort(handle2pointer(handle) + fieldOffset, value);
+	public static final void sput(long addr, short value, int fieldOffset) {
+		if (StructEnv.SAFETY_FIRST)
+			checkPointer(addr);
+		StructUnsafe.UNSAFE.putShort(addr + fieldOffset, value);
 	}
 
-	public static final short sget(int handle, int fieldOffset) {
-		checkHandle(handle);
-		return StructUnsafe.UNSAFE.getShort(handle2pointer(handle) + fieldOffset);
+	public static final short sget(long addr, int fieldOffset) {
+		if (StructEnv.SAFETY_FIRST)
+			checkPointer(addr);
+		return StructUnsafe.UNSAFE.getShort(addr + fieldOffset);
 	}
 
 	// char
 
-	public static final void cput(int handle, char value, int fieldOffset) {
-		checkHandle(handle);
-		StructUnsafe.UNSAFE.putChar(handle2pointer(handle) + fieldOffset, value);
+	public static final void cput(long addr, char value, int fieldOffset) {
+		if (StructEnv.SAFETY_FIRST)
+			checkPointer(addr);
+		StructUnsafe.UNSAFE.putChar(addr + fieldOffset, value);
 	}
 
-	public static final char cget(int handle, int fieldOffset) {
-		checkHandle(handle);
-		return StructUnsafe.UNSAFE.getChar(handle2pointer(handle) + fieldOffset);
+	public static final char cget(long addr, int fieldOffset) {
+		if (StructEnv.SAFETY_FIRST)
+			checkPointer(addr);
+		return StructUnsafe.UNSAFE.getChar(addr + fieldOffset);
 	}
 
 	// int
 
-	public static final void iput(int handle, int value, int fieldOffset) {
-		checkHandle(handle);
-		StructUnsafe.UNSAFE.putInt(handle2pointer(handle) + fieldOffset, value);
+	public static final void iput(long addr, int value, int fieldOffset) {
+		if (StructEnv.SAFETY_FIRST)
+			checkPointer(addr);
+		StructUnsafe.UNSAFE.putInt(addr + fieldOffset, value);
 	}
 
-	public static final int iget(int handle, int fieldOffset) {
-		checkHandle(handle);
-		return StructUnsafe.UNSAFE.getInt(handle2pointer(handle) + fieldOffset);
+	public static final int iget(long addr, int fieldOffset) {
+		if (StructEnv.SAFETY_FIRST)
+			checkPointer(addr);
+		return StructUnsafe.UNSAFE.getInt(addr + fieldOffset);
 	}
 
 	// float
 
-	public static final void fput(int handle, float value, int fieldOffset) {
-		checkHandle(handle);
-		StructUnsafe.UNSAFE.putFloat(handle2pointer(handle) + fieldOffset, value);
+	public static final void fput(long addr, float value, int fieldOffset) {
+		if (StructEnv.SAFETY_FIRST)
+			checkPointer(addr);
+		StructUnsafe.UNSAFE.putFloat(addr + fieldOffset, value);
 	}
 
-	public static final float fget(int handle, int fieldOffset) {
-		checkHandle(handle);
-		return StructUnsafe.UNSAFE.getFloat(handle2pointer(handle) + fieldOffset);
+	public static final float fget(long addr, int fieldOffset) {
+		if (StructEnv.SAFETY_FIRST)
+			checkPointer(addr);
+		return StructUnsafe.UNSAFE.getFloat(addr + fieldOffset);
 	}
 
 	// long
 
-	public static final void jput(int handle, long value, int fieldOffset) {
-		checkHandle(handle);
-		StructUnsafe.UNSAFE.putLong(handle2pointer(handle) + fieldOffset, value);
+	public static final void jput(long addr, long value, int fieldOffset) {
+		if (StructEnv.SAFETY_FIRST)
+			checkPointer(addr);
+		StructUnsafe.UNSAFE.putLong(addr + fieldOffset, value);
 	}
 
-	public static final long jget(int handle, int fieldOffset) {
-		checkHandle(handle);
-		return StructUnsafe.UNSAFE.getLong(handle2pointer(handle) + fieldOffset);
+	public static final long jget(long addr, int fieldOffset) {
+		if (StructEnv.SAFETY_FIRST)
+			checkPointer(addr);
+		return StructUnsafe.UNSAFE.getLong(addr + fieldOffset);
 	}
 
 	// double
 
-	public static final void dput(int handle, double value, int fieldOffset) {
-		checkHandle(handle);
-		StructUnsafe.UNSAFE.putDouble(handle2pointer(handle) + fieldOffset, value);
+	public static final void dput(long addr, double value, int fieldOffset) {
+		if (StructEnv.SAFETY_FIRST)
+			checkPointer(addr);
+		StructUnsafe.UNSAFE.putDouble(addr + fieldOffset, value);
 	}
 
-	public static final double dget(int handle, int fieldOffset) {
-		checkHandle(handle);
-		return StructUnsafe.UNSAFE.getDouble(handle2pointer(handle) + fieldOffset);
+	public static final double dget(long addr, int fieldOffset) {
+		if (StructEnv.SAFETY_FIRST)
+			checkPointer(addr);
+		return StructUnsafe.UNSAFE.getDouble(addr + fieldOffset);
 	}
 
 	// struct
 
-	public static final void $put(int handle, int value, int fieldOffset) {
-		checkHandle(handle);
-		StructUnsafe.UNSAFE.putInt(handle2pointer(handle) + fieldOffset, value);
+	public static final void $put(long addr, long value, int fieldOffset) {
+		if (StructEnv.SAFETY_FIRST)
+			checkPointer(addr);
+		StructUnsafe.UNSAFE.putLong(addr + fieldOffset, value);
 	}
 
-	public static final int $get(int handle, int fieldOffset) {
-		checkHandle(handle);
-		return StructUnsafe.UNSAFE.getInt(handle2pointer(handle) + fieldOffset);
+	public static final long $get(long addr, int fieldOffset) {
+		if (StructEnv.SAFETY_FIRST)
+			checkPointer(addr);
+		return StructUnsafe.UNSAFE.getLong(addr + fieldOffset);
 	}
 
 	// boolean[]
 
-	public static final void zaput(int arrayHandle, int index, boolean value) {
+	public static final void zaput(long arrayHandle, int index, boolean value) {
 		zput(arrayHandle, value, (index << 0));
 	}
 
-	public static final boolean zaget(int arrayHandle, int index) {
+	public static final boolean zaget(long arrayHandle, int index) {
 		return zget(arrayHandle, (index << 0));
 	}
 
 	// byte[]
 
-	public static final void baput(int arrayHandle, int index, byte value) {
+	public static final void baput(long arrayHandle, int index, byte value) {
 		bput(arrayHandle, value, (index << 0));
 	}
 
-	public static final byte baget(int arrayHandle, int index) {
+	public static final byte baget(long arrayHandle, int index) {
 		return bget(arrayHandle, (index << 0));
 	}
 
 	// short[]
 
-	public static final void saput(int arrayHandle, int index, short value) {
+	public static final void saput(long arrayHandle, int index, short value) {
 		sput(arrayHandle, value, (index << 1));
 	}
 
-	public static final short saget(int arrayHandle, int index) {
+	public static final short saget(long arrayHandle, int index) {
 		return sget(arrayHandle, (index << 1));
 	}
 
 	// char[]
 
-	public static final void caput(int arrayHandle, int index, char value) {
+	public static final void caput(long arrayHandle, int index, char value) {
 		cput(arrayHandle, value, (index << 1));
 	}
 
-	public static final char caget(int arrayHandle, int index) {
+	public static final char caget(long arrayHandle, int index) {
 		return cget(arrayHandle, (index << 1));
 	}
 
 	// int[]
 
-	public static final void iaput(int arrayHandle, int index, int value) {
+	public static final void iaput(long arrayHandle, int index, int value) {
 		iput(arrayHandle, value, (index << 2));
 	}
 
-	public static final int iaget(int arrayHandle, int index) {
+	public static final int iaget(long arrayHandle, int index) {
 		return iget(arrayHandle, (index << 2));
 	}
 
 	// float[]
 
-	public static final void faput(int arrayHandle, int index, float value) {
+	public static final void faput(long arrayHandle, int index, float value) {
 		fput(arrayHandle, value, (index << 2));
 	}
 
-	public static final float faget(int arrayHandle, int index) {
+	public static final float faget(long arrayHandle, int index) {
 		return fget(arrayHandle, (index << 2));
 	}
 
 	// long[]
 
-	public static final void japut(int arrayHandle, int index, long value) {
+	public static final void japut(long arrayHandle, int index, long value) {
 		jput(arrayHandle, value, (index << 3));
 	}
 
-	public static final long jaget(int arrayHandle, int index) {
+	public static final long jaget(long arrayHandle, int index) {
 		return jget(arrayHandle, (index << 3));
 	}
 
 	// double[]
 
-	public static final void daput(int arrayHandle, int index, double value) {
+	public static final void daput(long arrayHandle, int index, double value) {
 		dput(arrayHandle, value, (index << 3));
 	}
 
-	public static final double daget(int arrayHandle, int index) {
+	public static final double daget(long arrayHandle, int index) {
 		return dget(arrayHandle, (index << 3));
 	}
 }

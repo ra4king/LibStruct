@@ -1,47 +1,47 @@
 package net.indiespot.struct.runtime;
 
-public class StructAllocationBlock {
-	final int wordSizeof;
-	final int handleOffset;
-	protected int wordsAllocated;
+import net.indiespot.struct.transform.StructEnv;
 
-	StructAllocationBlock(int handleOffset, int sizeof) {
-		this.handleOffset = handleOffset;
-		this.wordSizeof = bytesToWords(sizeof);
-		this.wordsAllocated = 0;
+public class StructAllocationBlock {
+	final long base;
+	final int sizeof;
+	protected long next;
+
+	StructAllocationBlock(long base, int sizeof) {
+		this.base = base;
+		this.sizeof = sizeof;
+		this.next = base;
 	}
 
 	public void reset() {
-		wordsAllocated = 0;
+		this.next = base;
 	}
 
-	public int allocate(int sizeof) {
-		if(StructMemory.CHECK_ALLOC_OVERFLOW)
-			if(sizeof <= 0)
+	public long allocate(int sizeof, int alignment) {
+		if (StructEnv.SAFETY_FIRST)
+			if (sizeof <= 0)
 				throw new IllegalArgumentException();
 
-		if(StructMemory.CHECK_ALLOC_OVERFLOW)
-			if(!this.canAllocate(sizeof))
+		next = StructMemory.alignAddress(next, alignment);
+
+		if (StructEnv.SAFETY_FIRST)
+			if (!this.canAllocate(sizeof))
 				throw new StructAllocationBlockOverflowError();
 
-		int handleIndex = wordsAllocated;
-		wordsAllocated += bytesToWords(sizeof);
-		return handleOffset + handleIndex;
+		long addr = next;
+		next += sizeof;
+		return addr;
+	}
+
+	public int getFreeSpace() {
+		return (int) (base + sizeof - next);
 	}
 
 	public boolean canAllocate(int sizeof) {
-		return (sizeof > 0) && (wordsAllocated + bytesToWords(sizeof) <= this.wordSizeof);
+		return (sizeof > 0) && (next + sizeof) <= (base + this.sizeof);
 	}
 
-	public boolean isOnBlock(int handle) {
-		int rel = handle - handleOffset;
-		return rel >= 0 && rel < wordSizeof;
-	}
-
-	private static int bytesToWords(int sizeof) {
-		if(StructMemory.CHECK_POINTER_ALIGNMENT)
-			if((sizeof & 3) != 0)
-				throw new RuntimeException();
-		return sizeof >> 2;
+	public boolean isOnBlock(long handle) {
+		return (handle >= base && handle < base + sizeof);
 	}
 }

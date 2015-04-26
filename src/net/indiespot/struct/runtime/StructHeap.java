@@ -2,95 +2,95 @@ package net.indiespot.struct.runtime;
 
 import java.nio.ByteBuffer;
 
-import net.indiespot.struct.runtime.StructGC.IntList;
+import net.indiespot.struct.runtime.StructGC.LongList;
 import net.indiespot.struct.transform.StructEnv;
 
 public class StructHeap {
-	private static final boolean TRACK_EVERY_HANDLE = StructEnv.SAFETY_FIRST || false;
 
 	final ByteBuffer buffer;
 
 	private final StructAllocationBlock block;
 	private int allocCount, freeCount;
-	private IntList activeHandles;
+	private LongList activeHandles;
 
 	public StructHeap(ByteBuffer buffer) {
-		long addr = StructMemory.alignBufferToWord(buffer);
-		int handleOffset = StructMemory.pointer2handle(addr);
+		long addr = StructMemory.alignBuffer(buffer, StructMemory.JVMWORD_ALIGNMENT);
 
 		this.buffer = buffer;
-		this.block = new StructAllocationBlock(handleOffset, buffer.remaining());
+		this.block = new StructAllocationBlock(addr, buffer.remaining());
 
-		if(TRACK_EVERY_HANDLE) {
-			this.activeHandles = new IntList();
+		if (StructEnv.SAFETY_FIRST) {
+			this.activeHandles = new LongList();
 		}
 	}
 
-	public int malloc(int sizeof) {
-		if(block.canAllocate(sizeof)) {
-			int handle = block.allocate(sizeof);
-			if(TRACK_EVERY_HANDLE) {
-				if(activeHandles.contains(handle))
+	public long malloc(int sizeof, boolean dummy, int alignment) {
+		if (!block.canAllocate(sizeof + (alignment - 1)))
+			return 0;
+		long address = block.allocate(sizeof, alignment);
+		
+		if (StructEnv.SAFETY_FIRST) {
+			if (activeHandles.contains(address))
+				throw new IllegalStateException();
+			activeHandles.add(address);
+		}
+		allocCount++;
+		return address;
+	}
+
+	public long malloc(int sizeof, int length, int alignment) {
+		if (!block.canAllocate(sizeof * length + (alignment - 1)))
+			return 0;
+		long address = block.allocate(sizeof * length, alignment);
+
+		if (StructEnv.SAFETY_FIRST) {
+			for (long handle : StructMemory.createPointerArray(address, sizeof, length)) {
+				if (activeHandles.contains(handle))
 					throw new IllegalStateException();
 				activeHandles.add(handle);
 			}
-			allocCount++;
-			return handle;
 		}
-		return 0;
+		allocCount += length;
+		return address;
 	}
 
-	public int malloc(int sizeof, int length) {
-		if(block.canAllocate(sizeof * length)) {
-			int offset = block.allocate(sizeof * length);
-			if(TRACK_EVERY_HANDLE) {
-				for(int i = 0; i < length; i++) {
-					int handle = offset + i * StructMemory.bytes2words(sizeof);
-					if(activeHandles.contains(handle))
-						throw new IllegalStateException();
-					activeHandles.add(handle);
-				}
-			}
-			allocCount += length;
-			return offset;
+	public boolean freeHandle(long handle) {
+		if (!this.isOnHeap(handle))
+			return false;
+		if (StructEnv.SAFETY_FIRST)
+			if (!activeHandles.removeValue(handle))
+				throw new IllegalStateException();
+
+		if (++freeCount == allocCount) {
+			allocCount = 0;
+			freeCount = 0;
+			block.reset();
 		}
-		return 0;
+		return true;
 	}
 
-	public boolean freeHandle(int handle) {
-		if(this.isOnHeap(handle)) {
-			if(TRACK_EVERY_HANDLE) {
-				if(!activeHandles.removeValue(handle))
-					throw new IllegalStateException();
-			}
-			if(++freeCount == allocCount) {
-				allocCount = 0;
-				freeCount = 0;
-				block.wordsAllocated = 0;
-			}
-			return true;
-		}
-		return false;
-	}
-
-	public boolean isOnHeap(int handle) {
+	public boolean isOnHeap(long handle) {
 		return block.isOnBlock(handle);
 	}
 
 	public boolean isEmpty() {
 		boolean isEmpty = (allocCount == freeCount);
-		if(TRACK_EVERY_HANDLE)
-			if(isEmpty != activeHandles.isEmpty())
+		if (StructEnv.SAFETY_FIRST)
+			if (isEmpty != activeHandles.isEmpty())
 				throw new IllegalStateException();
 		return isEmpty;
 	}
 
 	public int getHandleCount() {
 		int count = (allocCount - freeCount);
-		if(TRACK_EVERY_HANDLE)
-			if(count != activeHandles.size())
+		if (StructEnv.SAFETY_FIRST)
+			if (count != activeHandles.size())
 				throw new IllegalStateException();
 		return count;
+	}
+
+	public int getHandleCountEstimate() {
+		return (allocCount - freeCount);
 	}
 
 	@Override

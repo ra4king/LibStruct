@@ -2,11 +2,6 @@ package net.indiespot.struct.transform;
 
 import static org.objectweb.asm.Opcodes.*;
 
-import java.io.ByteArrayOutputStream;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.IOException;
-import java.io.InputStream;
 import java.io.PrintWriter;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -32,6 +27,7 @@ import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassVisitor;
 import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.FieldVisitor;
+import org.objectweb.asm.Label;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.Type;
@@ -40,18 +36,23 @@ import org.objectweb.asm.util.TraceClassVisitor;
 
 public class StructEnv {
 	public static final boolean SAFETY_FIRST;
-
 	public static final boolean PRINT_LOG;
+	public static final boolean MEMORY_BASE_OFFSET;
 
 	static {
 		SAFETY_FIRST = StructConfig.parseVmArg(StructEnv.class, "SAFETY_FIRST", 0, false) != 0L;
 		PRINT_LOG = StructConfig.parseVmArg(StructEnv.class, "PRINT_LOG", 0, false) != 0L;
+		MEMORY_BASE_OFFSET = StructConfig.parseVmArg(StructEnv.class, "MEMORY_BASE_OFFSET", 0, false) != 0L;
 	}
 
 	public static final String plain_struct_flag = "$truct";
 	public static final String wrapped_struct_flag = "L" + plain_struct_flag + ";";
 	public static final String array_wrapped_struct_flag = "[L" + plain_struct_flag + ";";
 	private static final String RENAMED_CONSTRUCTOR_NAME = "_<init>_";
+
+	public static boolean isStructReferenceWide() {
+		return true;
+	}
 
 	private static Set<String> plain_struct_types = new HashSet<>();
 	private static Set<String> wrapped_struct_types = new HashSet<>();
@@ -64,7 +65,8 @@ public class StructEnv {
 	public static void addStruct(StructInfo info) {
 		if (is_rewriting)
 			throw new IllegalStateException("cannot add struct definition when classes have been rewritten already");
-		struct2info.put(info.fqcn, info);
+		if (struct2info.put(info.fqcn, info) != null)
+			throw new IllegalStateException("duplicate struct definition: " + info.fqcn);
 		plain_struct_types.add(info.fqcn);
 		wrapped_struct_types.add("L" + info.fqcn + ";");
 		array_wrapped_struct_types.add("[L" + info.fqcn + ";");
@@ -83,7 +85,7 @@ public class StructEnv {
 		final Set<String> fieldsWithStructType = new HashSet<>();
 		final Set<String> methodsWithStructAccess = new HashSet<>();
 		final Set<String> methodsWithStructCreation = new HashSet<>();
-		final Map<String, Integer> methodNameDesc2locals = new HashMap<>();
+		final Map<String, Integer> methodNameDesc2localCount = new HashMap<>();
 
 		public boolean needsRewrite() {
 			return !fieldsWithStructType.isEmpty() || !methodsWithStructAccess.isEmpty() || !methodsWithStructCreation.isEmpty();
@@ -230,7 +232,7 @@ public class StructEnv {
 
 						@Override
 						public void visitMaxs(int maxStack, int maxLocals) {
-							methodNameDesc2locals.put(methodName + methodDesc, Integer.valueOf(maxLocals));
+							methodNameDesc2localCount.put(methodName + methodDesc, Integer.valueOf(maxLocals));
 							super.visitMaxs(maxStack, maxLocals);
 						}
 					};
@@ -282,52 +284,6 @@ public class StructEnv {
 				return type3;
 			}
 		};
-		
-		if(StructMemory.CHECK_SOURCECODE)
-		{
-			File srcDir = new File("./src/");
-			if(srcDir.exists()) {
-				String relpath = fqcn;
-				if(relpath.indexOf('$') != -1)
-					relpath = relpath.substring(0, relpath.indexOf('$'));
-				File srcFile = new File(srcDir, relpath+".java");
-				if(srcFile.exists()) {
-					try {
-						InputStream fis = new FileInputStream(srcFile);
-						ByteArrayOutputStream baos = new ByteArrayOutputStream();
-						byte[] tmp = new byte[4*1024];
-						while(true) {
-							int got = fis.read(tmp,0,tmp.length);
-							if(got==-1)
-								break;
-							baos.write(tmp,  0, got);
-						}
-						String src = new String(baos.toByteArray(), "UTF-8");					
-						
-						for(String struct: plain_struct_types) {
-							struct = struct.substring(struct.lastIndexOf('/')+1);
-							struct = struct.substring(struct.indexOf('$')+1);
-							if(src.contains("<"+struct+">")) {
-								int io = src.indexOf("<"+struct+">");
-								int io2 = -1;
-								for(char c: " \t(".toCharArray()) {
-									int lio = src.substring(0,io).lastIndexOf(c);
-									if(lio != -1)
-										io2 = Math.max(io2, lio);
-								}
-								throw new UnsupportedOperationException(
-									"Cannot use generics with structs.\n"+//
-									"Found: "+src.substring(io2==-1?io:io2+1,io)+"<"+struct+"> in: "+relpath+".java");
-							}
-						}
-					}
-					catch(IOException exc) {
-						// ignore
-						exc.printStackTrace();
-					}
-				}
-			}
-		}
 
 		final Map<String, Set<String>> final2origMethods = new HashMap<>();
 
@@ -385,7 +341,7 @@ public class StructEnv {
 					desc = array_wrapped_struct_flag;
 				if (PRINT_LOG)
 					System.out.println("\tfield2: " + name + " " + desc);
-				String finalFieldDesc = desc.replace(wrapped_struct_flag, "I");
+				String finalFieldDesc = desc.replace(wrapped_struct_flag, "J");
 				return super.visitField(access, name, finalFieldDesc, signature, value);
 			}
 
@@ -423,8 +379,8 @@ public class StructEnv {
 				if (PRINT_LOG)
 					System.out.println("\tmethod2: " + methodName + " " + methodDesc);
 
-				String finalMethodName = methodName.replace(wrapped_struct_flag, "I");
-				String finalMethodDesc = methodDesc.replace(wrapped_struct_flag, "I");
+				String finalMethodName = methodName.replace(wrapped_struct_flag, "J");
+				String finalMethodDesc = methodDesc.replace(wrapped_struct_flag, "J");
 
 				{
 					String key = finalMethodName + " " + finalMethodDesc;
@@ -445,10 +401,16 @@ public class StructEnv {
 						return mv; // nope!
 				}
 				final boolean hasStructCreation = info.methodsWithStructCreation.contains(origMethodName + origMethodDesc);
+				final int origLocalvarSlots = info.methodNameDesc2localCount.get(origMethodName + origMethodDesc).intValue();
+				final int usedLocalvarSlots = //
+				origLocalvarSlots + //
+				   (hasStructCreation ? 1 : 0) + // TL-SAS
+				   (StructEnv.SAFETY_FIRST ? 4 : 0); // check suspicious
+				// field assignment
 
 				final String _methodName = methodName;
 				final int _access = access;
-				final FlowAnalysisMethodVisitor flow = new FlowAnalysisMethodVisitor(mv, access, fqcn, methodName, methodDesc, signature, exceptions);
+				final FlowAnalysisMethodVisitor flow = new FlowAnalysisMethodVisitor(usedLocalvarSlots, mv, access, fqcn, methodName, methodDesc, signature, exceptions);
 				return new MethodVisitor(Opcodes.ASM5, flow) {
 					private ReturnValueStrategy strategy;
 
@@ -469,27 +431,26 @@ public class StructEnv {
 					@Override
 					public void visitCode() {
 						if (_returnsStructType == null) {
-							if (strategy != null) {								
+							if (strategy != null) {
 								String msg = "";
 								msg += "@CopyStruct and @TakeStruct must only be used with struct return values";
 								msg += "\n\t\t" + fqcn + "." + _methodName + origMethodDesc;
-								
+
 								throw new IllegalStateException(msg);
 							}
-						}
-						else {
+						} else {
 							if (strategy == null) {
-								if((_access & ACC_SYNTHETIC) != 0) {
+								if ((_access & ACC_SYNTHETIC) != 0) {
 									strategy = ReturnValueStrategy.PASS;
 									if (PRINT_LOG)
 										System.out.println("\t\t\twith struct return value, using fallback Pass strategy due to synthetic method");
 								}
 							}
-							if (strategy == null) {								
+							if (strategy == null) {
 								String msg = "";
 								msg += "must define how struct return values are handled: ";
 								msg += "\n\t\t" + fqcn + "." + _methodName + origMethodDesc;
-								
+
 								throw new IllegalStateException(msg);
 							}
 						}
@@ -500,7 +461,7 @@ public class StructEnv {
 							// ...
 							super.visitMethodInsn(INVOKESTATIC, jvmClassName(StructThreadLocalStack.class), "saveStack", "()L" + StructAllocationStack.class.getName().replace('.', '/') + ";", false);
 							// ..., sas
-							super.visitVarInsn(ASTORE, info.methodNameDesc2locals.get(origMethodName + origMethodDesc).intValue());
+							super.visitVarInsn(ASTORE, origLocalvarSlots);
 						}
 					}
 
@@ -508,42 +469,20 @@ public class StructEnv {
 					public void visitInsn(int opcode) {
 						if (hasStructCreation) {
 							switch (opcode) {
-							case RETURN:
-							case ARETURN:
-							case IRETURN:
-							case FRETURN:
-							case LRETURN:
-							case DRETURN:
-								super.visitVarInsn(ALOAD, info.methodNameDesc2locals.get(origMethodName + origMethodDesc).intValue());
-								super.visitMethodInsn(Opcodes.INVOKEVIRTUAL, StructEnv.jvmClassName(StructAllocationStack.class), "restore", "()V", false);
-								break;
+								case RETURN:
+								case ARETURN:
+								case IRETURN:
+								case FRETURN:
+								case LRETURN:
+								case DRETURN:
+									super.visitVarInsn(ALOAD, origLocalvarSlots);
+									super.visitMethodInsn(Opcodes.INVOKEVIRTUAL, StructEnv.jvmClassName(StructAllocationStack.class), "restore", "()I", false);
+									super.visitInsn(Opcodes.POP);
+									break;
 							}
 						}
 
-						if (opcode >= 79 && opcode <= 86) { // Opcodes.*ASTORE
-							boolean isWide = (opcode == Opcodes.LASTORE || opcode == Opcodes.DASTORE);
-							if (_astore2type.containsKey(Integer.valueOf(opcode)) && flow.stack.peek(isWide ? 3 : 2) == VarType.EMBEDDED_ARRAY) {
-								flow.stack.set(isWide ? 3 : 2, VarType.INT);
-								super.visitMethodInsn(INVOKESTATIC, StructEnv.jvmClassName(StructMemory.class), _astore2type.get(opcode).toLowerCase() + "aput", "(II" + _astore2type.get(opcode) + ")V", false);
-								return;
-							}
-						}
-						if (opcode >= 46 && opcode <= 53) { // Opcodes.*ALOAD
-							if (_aload2type.containsKey(Integer.valueOf(opcode)) && flow.stack.peek(1) == VarType.EMBEDDED_ARRAY) {
-								flow.stack.set(1, VarType.INT);
-								super.visitMethodInsn(INVOKESTATIC, StructEnv.jvmClassName(StructMemory.class), _aload2type.get(opcode).toLowerCase() + "aget", "(II)" + _aload2type.get(opcode), false);
-								return;
-							}
-						}
-						if (opcode == ARRAYLENGTH && flow.stack.peek() == VarType.EMBEDDED_ARRAY) {
-							throw new IllegalStateException("cannot fetch length of embedded array, as the array does not exist");
-						}
-
-						if (opcode == ARETURN && flow.stack.peek() == VarType.EMBEDDED_ARRAY) {
-							throw new IllegalStateException("cannot return embedded array, as the array does not exist");
-						}
-						
-						if (opcode == ARETURN && flow.stack.peek() == VarType.STRUCT) {
+						if (opcode == ARETURN && flow.stack.peek() == VarType.STRUCT_LO) {
 							if (strategy == null)
 								throw new IllegalStateException();
 
@@ -554,7 +493,8 @@ public class StructEnv {
 								// no-op
 							} else if (strategy == ReturnValueStrategy.COPY) {
 								super.visitIntInsn(SIPUSH, struct2info.get(_returnsStructType).sizeof);
-								super.visitMethodInsn(INVOKESTATIC, StructEnv.jvmClassName(StructMemory.class), "allocateCopy", "(" + wrapped_struct_flag + "I)" + wrapped_struct_flag, false);
+								super.visitIntInsn(BIPUSH, StructMemory.DEFAULT_ALIGNMENT);
+								super.visitMethodInsn(INVOKESTATIC, StructEnv.jvmClassName(StructMemory.class), "allocateCopy", "(" + wrapped_struct_flag + "II)" + wrapped_struct_flag, false);
 							} else {
 								throw new IllegalStateException();
 							}
@@ -564,7 +504,19 @@ public class StructEnv {
 					}
 
 					@Override
+					public void visitLocalVariable(String name, String desc, String signature, Label start, Label end, int index) {
+						if (array_wrapped_struct_types.contains(desc))
+							desc = array_wrapped_struct_flag;
+						else if (wrapped_struct_types.contains(desc))
+							desc = wrapped_struct_flag;
+						super.visitLocalVariable(name, desc, signature, start, end, index);
+					}
+
+					@Override
 					public void visitFrame(int type, int nLocal, Object[] local, int nStack, Object[] stack) {
+						// System.out.println("visitFrame: local=" +
+						// Arrays.toString(local) + ", stack=" +
+						// Arrays.toString(stack));
 						if (local != null) {
 							for (int i = 0; i < local.length; i++) {
 								if (array_wrapped_struct_types.contains(local[i]))
@@ -589,25 +541,29 @@ public class StructEnv {
 					public void visitTypeInsn(int opcode, String type) {
 						if (opcode == NEW) {
 							if (struct2info.containsKey(type)) {
+								super.visitVarInsn(ALOAD, info.methodNameDesc2localCount.get(origMethodName + origMethodDesc).intValue());
 								super.visitIntInsn(Opcodes.SIPUSH, struct2info.get(type).sizeof);
-								super.visitVarInsn(ALOAD, info.methodNameDesc2locals.get(origMethodName + origMethodDesc).intValue());
-								if (struct2info.get(type).skipZeroFill)
-									super.visitMethodInsn(Opcodes.INVOKESTATIC, StructEnv.jvmClassName(StructMemory.class), "allocateSkipZeroFill", "(IL" + StructEnv.jvmClassName(StructAllocationStack.class) + ";)" + wrapped_struct_flag, false);
+								super.visitIntInsn(Opcodes.BIPUSH, StructMemory.DEFAULT_ALIGNMENT);
+								if (struct2info.get(type).disableClearMemory)
+									super.visitMethodInsn(Opcodes.INVOKESTATIC, StructEnv.jvmClassName(StructMemory.class), "malloc", "(L" + StructEnv.jvmClassName(StructAllocationStack.class) + ";II)" + wrapped_struct_flag, false);
 								else
-									super.visitMethodInsn(Opcodes.INVOKESTATIC, StructEnv.jvmClassName(StructMemory.class), "allocate", "(IL" + StructEnv.jvmClassName(StructAllocationStack.class) + ";)" + wrapped_struct_flag, false);
+									super.visitMethodInsn(Opcodes.INVOKESTATIC, StructEnv.jvmClassName(StructMemory.class), "calloc", "(L" + StructEnv.jvmClassName(StructAllocationStack.class) + ";II)" + wrapped_struct_flag, false);
 								return;
 							}
 						} else if (opcode == ANEWARRAY) {
 							if (struct2info.containsKey(type)) {
+								super.visitVarInsn(ALOAD, info.methodNameDesc2localCount.get(origMethodName + origMethodDesc).intValue());
+								super.visitInsn(Opcodes.SWAP);
 								super.visitIntInsn(Opcodes.SIPUSH, struct2info.get(type).sizeof);
-								super.visitVarInsn(ALOAD, info.methodNameDesc2locals.get(origMethodName + origMethodDesc).intValue());
-								super.visitMethodInsn(Opcodes.INVOKESTATIC, StructEnv.jvmClassName(StructMemory.class), "allocateArray", "(IIL" + jvmClassName(StructAllocationStack.class) + ";)" + array_wrapped_struct_flag, false);
+								super.visitIntInsn(Opcodes.BIPUSH, StructMemory.DEFAULT_ALIGNMENT);
+								// stack,length,sizeof,alignment
+								super.visitMethodInsn(Opcodes.INVOKESTATIC, StructEnv.jvmClassName(StructMemory.class), "allocateArray", "(L" + jvmClassName(StructAllocationStack.class) + ";III)" + array_wrapped_struct_flag, false);
 								flow.stack.popEQ(VarType.STRUCT_ARRAY);
 								flow.stack.push(VarType.STRUCT_ARRAY);
 								return;
 							}
 						} else if (opcode == CHECKCAST) {
-							if (flow.stack.peek() == VarType.STRUCT) {
+							if (flow.stack.peek() == VarType.STRUCT_LO) {
 								return;
 							}
 							if (flow.stack.peek() == VarType.STRUCT_ARRAY) {
@@ -620,15 +576,25 @@ public class StructEnv {
 
 					@Override
 					public void visitFieldInsn(int opcode, String owner, String name, String desc) {
-						if (StructMemory.CHECK_FIELD_ASSIGNMENT) {
+						if (StructEnv.SAFETY_FIRST) {
 							if (opcode == PUTFIELD || opcode == PUTSTATIC) {
 								if (wrapped_struct_types.contains(desc)) {
 									if (plain_struct_types.contains(owner)) {
-										super.visitInsn(DUP2);
-										super.visitMethodInsn(INVOKESTATIC, StructEnv.jvmClassName(StructMemory.class), "checkFieldAssignment", "(" + wrapped_struct_flag + "" + wrapped_struct_flag + ")V", false);
+										int base = origLocalvarSlots + (hasStructCreation ? 1 : 0);
+										super.visitVarInsn(ASTORE, 1 + base);
+										super.visitVarInsn(ASTORE, 0 + base);
+										super.visitVarInsn(ALOAD, 0 + base);
+										super.visitVarInsn(ALOAD, 1 + base);
+										super.visitIntInsn(BIPUSH, opcode == PUTSTATIC ? 1 : 0);
+										super.visitLdcInsn(owner + "." + name);
+										super.visitMethodInsn(INVOKESTATIC, StructEnv.jvmClassName(StructMemory.class), "checkFieldAssignment", "(" + wrapped_struct_flag + "" + wrapped_struct_flag + "ZLjava/lang/String;)V", false);
+										super.visitVarInsn(ALOAD, 0 + base);
+										super.visitVarInsn(ALOAD, 1 + base);
 									} else {
 										super.visitInsn(DUP);
-										super.visitMethodInsn(INVOKESTATIC, StructEnv.jvmClassName(StructMemory.class), "checkFieldAssignment", "(" + wrapped_struct_flag + ")V", false);
+										super.visitIntInsn(BIPUSH, opcode == PUTSTATIC ? 1 : 0);
+										super.visitLdcInsn(owner + "." + name);
+										super.visitMethodInsn(INVOKESTATIC, StructEnv.jvmClassName(StructMemory.class), "checkFieldAssignment", "(" + wrapped_struct_flag + "ZLjava/lang/String;)V", false);
 									}
 								}
 							}
@@ -668,18 +634,21 @@ public class StructEnv {
 								String type = info.field2type.get(name);
 
 								if (embed) {
-									flow.stack.popEQ(VarType.STRUCT);
-									flow.stack.push(VarType.INT);
+									flow.stack.popEQ(VarType.STRUCT_LO);
+									flow.stack.popEQ(VarType.STRUCT_HI);
 
-									super.visitIntInsn(SIPUSH, StructMemory.bytes2words(offset));
-									super.visitInsn(IADD);
+									flow.stack.push(VarType.MISC);
+									flow.stack.push(VarType.MISC);
 
-									flow.stack.popEQ(VarType.INT);
-									
-									if (type.startsWith("[") && type.length() == 2)
-										flow.stack.push(VarType.EMBEDDED_ARRAY);
-									else
-										flow.stack.push(VarType.STRUCT);
+									super.visitIntInsn(SIPUSH, offset);
+									super.visitInsn(I2L);
+									super.visitInsn(LADD);
+
+									flow.stack.popEQ(VarType.MISC);
+									flow.stack.popEQ(VarType.MISC);
+
+									flow.stack.push(VarType.STRUCT_HI);
+									flow.stack.push(VarType.STRUCT_LO);
 									return;
 								}
 
@@ -741,99 +710,138 @@ public class StructEnv {
 						}
 
 						if (owner.equals(StructEnv.jvmClassName(Struct.class))) {
-							if (name.equals("typedNull") && desc.equals("(Ljava/lang/Class;)Ljava/lang/Object;")) {
-								if (flow.stack.peek() == VarType.STRUCT_TYPE) {
-									flow.stack.set(0, VarType.INT);
-									// ..., sizeof
-									super.visitInsn(Opcodes.POP);
-									// ...
-									super.visitInsn(Opcodes.ICONST_0);
-									// ..., 'null'
-									flow.stack.set(0, VarType.STRUCT);
-									return;
-								} else {
-									throw new IllegalStateException("peek: " + flow.stack.peek());
-								}
+							if (name.equals("nullStruct") && desc.equals("(Ljava/lang/Class;)Ljava/lang/Object;")) {
+								flow.stack.cas(0, VarType.STRUCT_TYPE, VarType.INT);
+								// ..., sizeof
+								super.visitInsn(Opcodes.POP);
+								// ...
+								super.visitInsn(Opcodes.LCONST_0);
+								// ..., 'null'
+								flow.stack.popEQ(VarType.MISC);
+								flow.stack.popEQ(VarType.MISC);
+								flow.stack.push(VarType.STRUCT_HI);
+								flow.stack.push(VarType.STRUCT_LO);
+								return;
 							} else if (name.equals("sizeof") && desc.equals("(Ljava/lang/Class;)I")) {
-								if (flow.stack.peek() == VarType.STRUCT_TYPE) {
-									flow.stack.set(0, VarType.INT);
-									// ...,sizeof
-									return;
-								} else {
-									throw new IllegalStateException("peek: " + flow.stack.peek());
-								}
-							} else if (name.equals("emptyArray") && desc.equals("(Ljava/lang/Class;I)[Ljava/lang/Object;")) {
-								if (flow.stack.peek(1) == VarType.STRUCT_TYPE) {
-									flow.stack.set(1, VarType.INT);
-									// ...,sizeof,length
-									flow.visitInsn(Opcodes.SWAP);
-									// ...,length,sizeof
-									flow.visitInsn(Opcodes.POP);
-									// ...,length
-									owner = StructEnv.jvmClassName(StructMemory.class);
-									name = "emptyArray";
-									desc = "(I)[" + wrapped_struct_flag;
-								} else {
-									throw new IllegalStateException("peek: " + flow.stack.peek());
-								}
+								flow.stack.cas(0, VarType.STRUCT_TYPE, VarType.INT);
+								// ...,sizeof
+								return;
+							} else if (name.equals("nullArray") && desc.equals("(Ljava/lang/Class;I)[Ljava/lang/Object;")) {
+								flow.stack.cas(1, VarType.STRUCT_TYPE, VarType.INT);
+								// ...,sizeof,length
+								flow.visitInsn(Opcodes.SWAP);
+								// ...,length,sizeof
+								flow.visitInsn(Opcodes.POP);
+								// ...,length
+								owner = StructEnv.jvmClassName(StructMemory.class);
+								name = "nullArray";
+								desc = "(I)[" + wrapped_struct_flag;
 							} else if (name.equals("malloc") && desc.equals("(Ljava/lang/Class;)Ljava/lang/Object;")) {
-								if (flow.stack.peek(0) == VarType.STRUCT_TYPE) {
-									flow.stack.set(0, VarType.INT);
-									// ...,sizeof
-									owner = StructEnv.jvmClassName(StructGC.class);
-									name = "malloc";
-									desc = "(I)" + wrapped_struct_flag;
-								} else {
-									throw new IllegalStateException("peek: " + flow.stack.peek());
-								}
-							} else if (name.equals("malloc") && desc.equals("(Ljava/lang/Class;I)[Ljava/lang/Object;")) {
-								if (flow.stack.peek(1) == VarType.STRUCT_TYPE) {
-									flow.stack.set(1, VarType.INT);
-									// ...,sizeof,length
-									owner = StructEnv.jvmClassName(StructGC.class);
-									name = "malloc";
-									desc = "(II)[" + wrapped_struct_flag;
-								} else {
-									throw new IllegalStateException("peek: " + flow.stack.peek());
-								}
+								flow.stack.cas(0, VarType.STRUCT_TYPE, VarType.INT);
+								// ...,sizeof
+								flow.visitIntInsn(BIPUSH, StructMemory.DEFAULT_ALIGNMENT);
+								// ...,sizeof,alignment
+								owner = StructEnv.jvmClassName(StructGC.class);
+								name = "malloc";
+								desc = "(II)" + wrapped_struct_flag;
+							} else if (name.equals("malloc") && desc.equals("(Ljava/lang/Class;I)Ljava/lang/Object;")) {
+								flow.stack.cas(1, VarType.STRUCT_TYPE, VarType.INT);
+								// ...,sizeof,alignment
+								owner = StructEnv.jvmClassName(StructGC.class);
+								name = "malloc";
+								desc = "(II)" + wrapped_struct_flag;
+							} else if (name.equals("mallocArray") && desc.equals("(Ljava/lang/Class;I)[Ljava/lang/Object;")) {
+								flow.stack.cas(1, VarType.STRUCT_TYPE, VarType.INT);
+								// ...,sizeof,length
+								flow.visitIntInsn(BIPUSH, StructMemory.DEFAULT_ALIGNMENT);
+								// ...,sizeof,length,alignment
+								owner = StructEnv.jvmClassName(StructGC.class);
+								name = "mallocArray";
+								desc = "(III)[" + wrapped_struct_flag;
+							} else if (name.equals("mallocArray") && desc.equals("(Ljava/lang/Class;II)[Ljava/lang/Object;")) {
+								flow.stack.cas(2, VarType.STRUCT_TYPE, VarType.INT);
+								// ...,sizeof,length,alignment
+								owner = StructEnv.jvmClassName(StructGC.class);
+								name = "mallocArray";
+								desc = "(III)[" + wrapped_struct_flag;
 							} else if (name.equals("calloc") && desc.equals("(Ljava/lang/Class;)Ljava/lang/Object;")) {
-								if (flow.stack.peek(0) == VarType.STRUCT_TYPE) {
-									flow.stack.set(0, VarType.INT);
-									// ...,sizeof
-									owner = StructEnv.jvmClassName(StructGC.class);
-									name = "calloc";
-									desc = "(I)" + wrapped_struct_flag;
-								} else {
-									throw new IllegalStateException("peek: " + flow.stack.peek());
-								}
-							} else if (name.equals("calloc") && desc.equals("(Ljava/lang/Class;I)[Ljava/lang/Object;")) {
-								if (flow.stack.peek(1) == VarType.STRUCT_TYPE) {
-									flow.stack.set(1, VarType.INT);
-									// ...,sizeof,length
-									owner = StructEnv.jvmClassName(StructGC.class);
-									name = "calloc";
-									desc = "(II)[" + wrapped_struct_flag;
-								} else {
-									throw new IllegalStateException("peek: " + flow.stack.peek());
-								}
-							} else if (name.equals("realloc") && desc.equals("(Ljava/lang/Class;[Ljava/lang/Object;I)[Ljava/lang/Object;")) {
-								if (flow.stack.peek(2) == VarType.STRUCT_TYPE) {
-									flow.stack.set(2, VarType.INT);
-									// ...,sizeof,struct[],length
-									owner = StructEnv.jvmClassName(StructGC.class);
-									name = "realloc";
-									desc = "(I["+wrapped_struct_flag+"I)[" + wrapped_struct_flag;
-								} else {
-									throw new IllegalStateException("peek: " + flow.stack.peek());
-								}
+								flow.stack.cas(0, VarType.STRUCT_TYPE, VarType.INT);
+								// ...,sizeof
+								flow.visitIntInsn(BIPUSH, StructMemory.DEFAULT_ALIGNMENT);
+								// ...,sizeof,alignment
+								owner = StructEnv.jvmClassName(StructGC.class);
+								name = "calloc";
+								desc = "(II)" + wrapped_struct_flag;
+							} else if (name.equals("calloc") && desc.equals("(Ljava/lang/Class;I)Ljava/lang/Object;")) {
+								flow.stack.cas(1, VarType.STRUCT_TYPE, VarType.INT);
+								// ...,sizeof,alignment
+								owner = StructEnv.jvmClassName(StructGC.class);
+								name = "calloc";
+								desc = "(II)" + wrapped_struct_flag;
+							} else if (name.equals("callocArray") && desc.equals("(Ljava/lang/Class;I)[Ljava/lang/Object;")) {
+								flow.stack.cas(1, VarType.STRUCT_TYPE, VarType.INT);
+								// ...,sizeof,length
+								flow.visitIntInsn(BIPUSH, StructMemory.DEFAULT_ALIGNMENT);
+								// ...,sizeof,length,alignment
+								owner = StructEnv.jvmClassName(StructGC.class);
+								name = "callocArray";
+								desc = "(III)[" + wrapped_struct_flag;
+							} else if (name.equals("callocArray") && desc.equals("(Ljava/lang/Class;II)[Ljava/lang/Object;")) {
+								flow.stack.cas(2, VarType.STRUCT_TYPE, VarType.INT);
+								// ...,sizeof,length,alignment
+								owner = StructEnv.jvmClassName(StructGC.class);
+								name = "callocArray";
+								desc = "(III)[" + wrapped_struct_flag;
+							} else if (name.equals("reallocArray") && desc.equals("(Ljava/lang/Class;[Ljava/lang/Object;I)[Ljava/lang/Object;")) {
+								flow.stack.cas(2, VarType.STRUCT_TYPE, VarType.INT);
+								// ...,sizeof,struct[],length
+								flow.visitIntInsn(BIPUSH, StructMemory.DEFAULT_ALIGNMENT);
+								// ...,sizeof,struct[],length,alignment
+								owner = StructEnv.jvmClassName(StructGC.class);
+								name = "reallocArray";
+								desc = "(I[" + wrapped_struct_flag + "II)[" + wrapped_struct_flag;
+							} else if (name.equals("reallocArray") && desc.equals("(Ljava/lang/Class;[Ljava/lang/Object;II)[Ljava/lang/Object;")) {
+								flow.stack.cas(3, VarType.STRUCT_TYPE, VarType.INT);
+								// ...,sizeof,struct[],length,alignment
+								owner = StructEnv.jvmClassName(StructGC.class);
+								name = "reallocArray";
+								desc = "(I[" + wrapped_struct_flag + "II)[" + wrapped_struct_flag;
+							} else if (name.equals("mallocArrayBase") && desc.equals("(Ljava/lang/Class;I)Ljava/lang/Object;")) {
+								flow.stack.cas(1, VarType.STRUCT_TYPE, VarType.INT);
+								// ...,sizeof,length
+								flow.visitIntInsn(BIPUSH, StructMemory.DEFAULT_ALIGNMENT);
+								// ...,sizeof,length,alignment
+								owner = StructEnv.jvmClassName(StructGC.class);
+								name = "mallocArrayBase";
+								desc = "(III)" + wrapped_struct_flag;
+							} else if (name.equals("mallocArrayBase") && desc.equals("(Ljava/lang/Class;II)Ljava/lang/Object;")) {
+								flow.stack.cas(2, VarType.STRUCT_TYPE, VarType.INT);
+								// ...,sizeof,length,alignment
+								owner = StructEnv.jvmClassName(StructGC.class);
+								name = "mallocArrayBase";
+								desc = "(III)" + wrapped_struct_flag;
+							} else if (name.equals("callocArrayBase") && desc.equals("(Ljava/lang/Class;I)Ljava/lang/Object;")) {
+								flow.stack.cas(1, VarType.STRUCT_TYPE, VarType.INT);
+								// ...,sizeof,length
+								flow.visitIntInsn(BIPUSH, StructMemory.DEFAULT_ALIGNMENT);
+								// ...,sizeof,length,alignment
+								owner = StructEnv.jvmClassName(StructGC.class);
+								name = "callocArrayBase";
+								desc = "(III)" + wrapped_struct_flag;
+							} else if (name.equals("callocArrayBase") && desc.equals("(Ljava/lang/Class;II)Ljava/lang/Object;")) {
+								flow.stack.cas(2, VarType.STRUCT_TYPE, VarType.INT);
+								// ...,sizeof,length,alignment
+								owner = StructEnv.jvmClassName(StructGC.class);
+								name = "callocArrayBase";
+								desc = "(III)" + wrapped_struct_flag;
 							} else if (name.equals("free") && desc.equals("(Ljava/lang/Object;)V")) {
-								if (flow.stack.peek() == VarType.NULL) {
+								if (flow.stack.peek() == VarType.NULL_REFERENCE) {
 									// ..., NULL
 									super.visitInsn(Opcodes.POP); // right thing
-																	// to do?
+									// to do?
 									// ...
 									return;
-								} else if (flow.stack.peek() == VarType.STRUCT) {
+								} else if (flow.stack.peek() == VarType.STRUCT_LO) {
 									owner = StructEnv.jvmClassName(StructGC.class);
 									name = "freeHandle";
 									desc = "(" + wrapped_struct_flag + ")V";
@@ -841,10 +849,10 @@ public class StructEnv {
 									throw new IllegalStateException("peek: " + flow.stack.peek());
 								}
 							} else if (name.equals("free") && desc.equals("([Ljava/lang/Object;)V")) {
-								if (flow.stack.peek() == VarType.NULL) {
+								if (flow.stack.peek() == VarType.NULL_REFERENCE) {
 									// ..., NULL
 									super.visitInsn(Opcodes.POP); // right thing
-																	// to do?
+									// to do?
 									// ...
 									return;
 								} else if (flow.stack.peek() == VarType.STRUCT_ARRAY) {
@@ -855,83 +863,88 @@ public class StructEnv {
 									throw new IllegalStateException("peek: " + flow.stack.peek());
 								}
 							} else if (name.equals("copy") && desc.equals("(Ljava/lang/Class;Ljava/lang/Object;Ljava/lang/Object;)V")) {
-								if (flow.stack.peek(2) == VarType.STRUCT_TYPE) {
-									flow.stack.set(2, VarType.INT);
-									// ...,sizeof,src,dst
-									owner = StructEnv.jvmClassName(StructMemory.class);
-									name = "copy";
-									desc = "(I" + wrapped_struct_flag + "" + wrapped_struct_flag + ")V";
-								} else {
-									throw new IllegalStateException("peek: " + flow.stack.peek(2));
-								}
+								flow.stack.cas(4, VarType.STRUCT_TYPE, VarType.INT);
+								// ...,sizeof,src,dst
+								owner = StructEnv.jvmClassName(StructMemory.class);
+								name = "copy";
+								desc = "(I" + wrapped_struct_flag + "" + wrapped_struct_flag + ")V";
+							} else if (name.equals("copy") && desc.equals("(Ljava/lang/Class;Ljava/lang/Object;Ljava/lang/Object;I)V")) {
+								flow.stack.cas(5, VarType.STRUCT_TYPE, VarType.INT);
+								// ...,sizeof,src,dst,count
+								owner = StructEnv.jvmClassName(StructMemory.class);
+								name = "copy";
+								desc = "(I" + wrapped_struct_flag + "" + wrapped_struct_flag + "I)V";
 							} else if (name.equals("swap") && desc.equals("(Ljava/lang/Class;Ljava/lang/Object;Ljava/lang/Object;)V")) {
-								if (flow.stack.peek(2) == VarType.STRUCT_TYPE) {
-									flow.stack.set(2, VarType.INT);
-									// ...,sizeof,src,dst
-									owner = StructEnv.jvmClassName(StructMemory.class);
-									name = "swap";
-									desc = "(I" + wrapped_struct_flag + "" + wrapped_struct_flag + ")V";
-								} else {
-									throw new IllegalStateException("peek: " + flow.stack.peek(2));
-								}
+								flow.stack.cas(4, VarType.STRUCT_TYPE, VarType.INT);
+								// ...,sizeof,src,dst
+								owner = StructEnv.jvmClassName(StructMemory.class);
+								name = "swap";
+								desc = "(I" + wrapped_struct_flag + "" + wrapped_struct_flag + ")V";
 							} else if (name.equals("view") && desc.equals("(Ljava/lang/Object;Ljava/lang/Class;I)Ljava/lang/Object;")) {
-								if (flow.stack.peek(1) == VarType.STRUCT_TYPE) {
-									flow.stack.set(1, VarType.INT);
-									// ...,this,asType,offset
-									super.visitInsn(Opcodes.SWAP);
-									// ...,this,offset,asType
-									super.visitInsn(Opcodes.POP);
-									// ...,this,offset
-									owner = StructEnv.jvmClassName(StructMemory.class);
-									name = "view";
-									desc = "(" + wrapped_struct_flag + "I)" + wrapped_struct_flag;
-								} else {
-									throw new IllegalStateException("peek: " + flow.stack.peek(2));
-								}
-							} else if (name.equals("sibling") && desc.equals("(Ljava/lang/Object;Ljava/lang/Class;I)Ljava/lang/Object;")) {
-								if (flow.stack.peek(1) == VarType.STRUCT_TYPE) {
-									flow.stack.set(1, VarType.INT);
-									// ...,address,sizeof,index
-									owner = StructEnv.jvmClassName(StructMemory.class);
-									name = "sibling";
-									desc = "(" + wrapped_struct_flag + "II)" + wrapped_struct_flag;
-								} else {
-									throw new IllegalStateException("peek: " + flow.stack.peek(2));
-								}
+								flow.stack.cas(1, VarType.STRUCT_TYPE, VarType.INT);
+								// ...,this,asType,offset
+								super.visitInsn(Opcodes.SWAP);
+								// ...,this,offset,asType
+								super.visitInsn(Opcodes.POP);
+								// ...,this,offset
+								owner = StructEnv.jvmClassName(StructMemory.class);
+								name = "view";
+								desc = "(" + wrapped_struct_flag + "I)" + wrapped_struct_flag;
+							} else if (name.equals("index") && desc.equals("(Ljava/lang/Object;Ljava/lang/Class;I)Ljava/lang/Object;")) {
+								flow.stack.cas(1, VarType.STRUCT_TYPE, VarType.INT);
+								// ...,address,sizeof,index
+								owner = StructEnv.jvmClassName(StructMemory.class);
+								name = "index";
+								desc = "(" + wrapped_struct_flag + "II)" + wrapped_struct_flag;
 							} else if (name.equals("fromPointer") && desc.equals("(J)Ljava/lang/Object;")) {
-								if (flow.stack.peek() == VarType.MISC) {
-									owner = StructEnv.jvmClassName(StructMemory.class);
-									name = "pointer2handle";
-									desc = "(J)" + wrapped_struct_flag;
-								} else {
-									throw new IllegalStateException("peek: " + flow.stack.peek());
-								}
+								// ..., address
+								flow.stack.popEQ(VarType.MISC);
+								flow.stack.popEQ(VarType.MISC);
+								// ...
+								flow.stack.push(VarType.STRUCT_HI);
+								flow.stack.push(VarType.STRUCT_LO);
+								// ..., pointer
+								return;
+							} else if (name.equals("fromPointer") && desc.equals("(JLjava/lang/Class;I)[Ljava/lang/Object;")) {
+								flow.stack.cas(1, VarType.STRUCT_TYPE, VarType.INT);
+								// ...,address,sizeof,length
+								owner = StructEnv.jvmClassName(StructMemory.class);
+								name = "createPointerArray";
+								desc = "(JII)" + array_wrapped_struct_flag;
+							} else if (name.equals("fromPointer") && desc.equals("(JII)[Ljava/lang/Object;")) {
+								// ...,address,stride,length
+								owner = StructEnv.jvmClassName(StructMemory.class);
+								name = "createPointerArray";
+								desc = "(JII)" + array_wrapped_struct_flag;
 							} else if (name.equals("getPointer") && desc.equals("(Ljava/lang/Object;)J")) {
-								if (flow.stack.peek() == VarType.NULL) {
+								if (flow.stack.peek() == VarType.NULL_REFERENCE) {
 									// ..., NULL
 									super.visitInsn(Opcodes.POP);
 									// ...
-									super.visitInsn(Opcodes.ICONST_M1);
-									// ..., -1
-									super.visitInsn(Opcodes.I2L);
-									// ..., -1L
+									super.visitInsn(Opcodes.LCONST_0);
+									// ..., 0L
 									return;
-								} else if (flow.stack.peek() == VarType.STRUCT) {
-									owner = StructEnv.jvmClassName(StructMemory.class);
-									name = "handle2pointer";
-									desc = "(" + wrapped_struct_flag + ")J";
+								} else if (flow.stack.peek() == VarType.STRUCT_LO) {
+									// ..., pointer
+									flow.stack.popEQ(VarType.STRUCT_LO);
+									flow.stack.popEQ(VarType.STRUCT_HI);
+									// ...
+									flow.stack.push(VarType.MISC);
+									flow.stack.push(VarType.MISC);
+									// ..., address
+									return;
 								} else {
 									throw new IllegalStateException("peek: " + flow.stack.peek());
 								}
 							} else if (name.equals("isReachable") && desc.equals("(Ljava/lang/Object;)Z")) {
-								if (flow.stack.peek() == VarType.NULL) {
+								if (flow.stack.peek() == VarType.NULL_REFERENCE) {
 									// ..., NULL
 									super.visitInsn(Opcodes.POP);
 									// ...
 									super.visitInsn(Opcodes.ICONST_0);
 									// ..., 'false'
 									return;
-								} else if (flow.stack.peek() == VarType.STRUCT) {
+								} else if (flow.stack.peek() == VarType.STRUCT_LO) {
 									owner = StructEnv.jvmClassName(StructMemory.class);
 									name = "isValid";
 									desc = "(" + wrapped_struct_flag + ")Z";
@@ -939,47 +952,31 @@ public class StructEnv {
 									throw new IllegalStateException("peek: " + flow.stack.peek());
 								}
 							} else if (name.equals("map") && desc.equals("(Ljava/lang/Class;Ljava/nio/ByteBuffer;)[Ljava/lang/Object;")) {
-								if (flow.stack.peek() == VarType.REFERENCE) {
-									if (flow.stack.peek(1) == VarType.STRUCT_TYPE) {
-										// ...,type,buffer
-										flow.stack.set(1, VarType.INT);
-										// ...,sizeof,buffer
-										owner = StructEnv.jvmClassName(StructMemory.class);
-										name = "mapBuffer";
-										desc = "(ILjava/nio/ByteBuffer;)[" + wrapped_struct_flag;
-									}
-								} else {
-									throw new IllegalStateException();
-								}
+								// ...,type,buffer
+								flow.stack.cas(1, VarType.STRUCT_TYPE, VarType.INT);
+								// ...,sizeof,buffer
+								owner = StructEnv.jvmClassName(StructMemory.class);
+								name = "mapBuffer";
+								desc = "(ILjava/nio/ByteBuffer;)[" + wrapped_struct_flag;
 							} else if (name.equals("map") && desc.equals("(Ljava/lang/Class;Ljava/nio/ByteBuffer;II)[Ljava/lang/Object;")) {
-								if (flow.stack.peek(2) == VarType.REFERENCE) {
-									if (flow.stack.peek(3) == VarType.STRUCT_TYPE) {
-										// ...,type,buffer,stride,offset
-										flow.stack.set(3, VarType.INT);
-										// ...,sizeof,buffer,stride,offset
-										owner = StructEnv.jvmClassName(StructMemory.class);
-										name = "mapBuffer";
-										desc = "(ILjava/nio/ByteBuffer;II)[" + wrapped_struct_flag;
-									}
-								} else {
-									throw new IllegalStateException();
-								}
+								// ...,type,buffer,stride,offset
+								flow.stack.cas(3, VarType.STRUCT_TYPE, VarType.INT);
+								// ...,sizeof,buffer,stride,offset
+								owner = StructEnv.jvmClassName(StructMemory.class);
+								name = "mapBuffer";
+								desc = "(ILjava/nio/ByteBuffer;II)[" + wrapped_struct_flag;
 							} else if (name.equals("createStructAllocationStack") && desc.equals("(I)L" + jvmClassName(StructAllocationStack.class) + ";")) {
 								owner = StructEnv.jvmClassName(StructMemory.class);
 							} else if (name.equals("discardStructAllocationStack") && desc.equals("(L" + jvmClassName(StructAllocationStack.class) + ";)V")) {
 								owner = StructEnv.jvmClassName(StructMemory.class);
 							} else if (name.equals("stackAlloc") && desc.equals("(L" + jvmClassName(StructAllocationStack.class) + ";Ljava/lang/Class;)Ljava/lang/Object;")) {
-								if (flow.stack.peek(0) == VarType.STRUCT_TYPE) {
-									flow.stack.set(0, VarType.INT);
-									// ...,stack,sizeof
-									flow.visitInsn(Opcodes.SWAP);
-									// ...,sizeof,stack
-									owner = StructEnv.jvmClassName(StructMemory.class);
-									name = "allocateSkipZeroFill";
-									desc = "(IL" + jvmClassName(StructAllocationStack.class) + ";)" + wrapped_struct_flag;
-								} else {
-									throw new IllegalStateException("peek: " + flow.stack.peek());
-								}
+								flow.stack.cas(0, VarType.STRUCT_TYPE, VarType.INT);
+								// ...,stack,sizeof
+								flow.visitIntInsn(Opcodes.BIPUSH, 4);
+								// ...,stack,sizeof,alignment
+								owner = StructEnv.jvmClassName(StructMemory.class);
+								name = "malloc";
+								desc = "(L" + jvmClassName(StructAllocationStack.class) + ";II)" + wrapped_struct_flag;
 							}
 						}
 
@@ -1036,7 +1033,7 @@ public class StructEnv {
 				msg += "\tThe following methods collide after transformation: \n";
 				for (String m : entry.getValue())
 					msg += "\t\t" + m + "\n";
-				msg += "\tdue to shared name and description: (struct references are rewritten to ints)\n";
+				msg += "\tdue to shared name and description: (struct references are rewritten to longs)\n";
 				msg += "\t\t" + entry.getKey() + "\n";
 				if (!StructEnv.PRINT_LOG)
 					msg += "\n\t\tfor more information set: -DLibStruct.PRINT_LOG=true";

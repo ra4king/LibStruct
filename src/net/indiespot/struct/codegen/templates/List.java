@@ -1,11 +1,13 @@
+package net.indiespot.struct.codegen.templates;
+
 import net.indiespot.struct.cp.Struct;
 import net.indiespot.struct.cp.TakeStruct;
+import net.indiespot.struct.transform.StructEnv;
 
 public class List<T> {
-
 	private T[] arr;
 	private int size, cap;
-	
+
 	public List() {
 		this(10);
 	}
@@ -27,10 +29,12 @@ public class List<T> {
 	}
 
 	public void addRange(List<T> list, int off, int len) {
-		if (len < 0)
-			throw new IllegalArgumentException();
-		if (off + len > list.size)
-			throw new IllegalArgumentException();
+		if (StructEnv.SAFETY_FIRST)
+			if (len < 0)
+				throw new IllegalArgumentException();
+		if (StructEnv.SAFETY_FIRST)
+			if (off + len > list.size)
+				throw new IllegalArgumentException();
 		for (int i = 0; i < len; i++) {
 			this.add(list.arr[off + i]);
 		}
@@ -44,15 +48,17 @@ public class List<T> {
 
 	@TakeStruct
 	public T get(int index) {
-		if (index < 0 || index >= size)
-			throw new ArrayIndexOutOfBoundsException(index);
+		if (StructEnv.SAFETY_FIRST)
+			if (index < 0 || index >= size)
+				throw new ArrayIndexOutOfBoundsException(index);
 		return arr[index];
 	}
 
 	@TakeStruct
 	public T remove(int index) {
-		if (index < 0 || index >= size)
-			throw new ArrayIndexOutOfBoundsException(index);
+		if (StructEnv.SAFETY_FIRST)
+			if (index < 0 || index >= size)
+				throw new ArrayIndexOutOfBoundsException(index);
 		T got = arr[index];
 		System.arraycopy(arr, index + 1, arr, index, --size - index);
 		return got;
@@ -60,8 +66,9 @@ public class List<T> {
 
 	@TakeStruct
 	public T removeMoveLast(int index) {
-		if (index < 0 || index >= size)
-			throw new ArrayIndexOutOfBoundsException(index);
+		if (StructEnv.SAFETY_FIRST)
+			if (index < 0 || index >= size)
+				throw new ArrayIndexOutOfBoundsException(index);
 		T got = arr[index];
 		arr[index] = arr[--size];
 		return got;
@@ -72,10 +79,7 @@ public class List<T> {
 	}
 
 	public void expandTo(int minSize) {
-		T[] arr2 = Struct.emptyArray((Class<T>)Object.class, Math.max(minSize, cap * 2));
-		for (int i = 0; i < size; i++)
-			arr2[i] = arr[i];
-		arr = arr2;
+		arr = Struct.reallocArray((Class<T>) Object.class, arr, Math.max(minSize, cap * 2));
 		cap = arr.length;
 	}
 }

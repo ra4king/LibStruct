@@ -1,14 +1,15 @@
-package test.net.indiespot.demo.softlylit.structs;
+package test.net.indiespot.demo.softlylit.structs.support;
 
 import test.net.indiespot.demo.softlylit.structs.Line;
+
 import net.indiespot.struct.cp.Struct;
 import net.indiespot.struct.cp.TakeStruct;
+import net.indiespot.struct.transform.StructEnv;
 
 public class LineList {
-
 	private Line[] arr;
 	private int size, cap;
-	
+
 	public LineList() {
 		this(10);
 	}
@@ -30,10 +31,12 @@ public class LineList {
 	}
 
 	public void addRange(LineList list, int off, int len) {
-		if (len < 0)
-			throw new IllegalArgumentException();
-		if (off + len > list.size)
-			throw new IllegalArgumentException();
+		if (StructEnv.SAFETY_FIRST)
+			if (len < 0)
+				throw new IllegalArgumentException();
+		if (StructEnv.SAFETY_FIRST)
+			if (off + len > list.size)
+				throw new IllegalArgumentException();
 		for (int i = 0; i < len; i++) {
 			this.add(list.arr[off + i]);
 		}
@@ -47,15 +50,17 @@ public class LineList {
 
 	@TakeStruct
 	public Line get(int index) {
-		if (index < 0 || index >= size)
-			throw new ArrayIndexOutOfBoundsException(index);
+		if (StructEnv.SAFETY_FIRST)
+			if (index < 0 || index >= size)
+				throw new ArrayIndexOutOfBoundsException(index);
 		return arr[index];
 	}
 
 	@TakeStruct
 	public Line remove(int index) {
-		if (index < 0 || index >= size)
-			throw new ArrayIndexOutOfBoundsException(index);
+		if (StructEnv.SAFETY_FIRST)
+			if (index < 0 || index >= size)
+				throw new ArrayIndexOutOfBoundsException(index);
 		Line got = arr[index];
 		System.arraycopy(arr, index + 1, arr, index, --size - index);
 		return got;
@@ -63,8 +68,9 @@ public class LineList {
 
 	@TakeStruct
 	public Line removeMoveLast(int index) {
-		if (index < 0 || index >= size)
-			throw new ArrayIndexOutOfBoundsException(index);
+		if (StructEnv.SAFETY_FIRST)
+			if (index < 0 || index >= size)
+				throw new ArrayIndexOutOfBoundsException(index);
 		Line got = arr[index];
 		arr[index] = arr[--size];
 		return got;
@@ -75,14 +81,7 @@ public class LineList {
 	}
 
 	public void expandTo(int minSize) {
-		Line[] arr2 = Struct.emptyArray(Line.class, Math.max(minSize, cap * 2));
-		for (int i = 0; i < size; i++)
-			arr2[i] = arr[i];
-		arr = arr2;
+		arr = Struct.reallocArray(Line.class, arr, Math.max(minSize, cap * 2));
 		cap = arr.length;
-	}
-	
-	public LineList self() {
-		return new LineList();
 	}
 }

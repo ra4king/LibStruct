@@ -2,7 +2,6 @@ package test.net.indiespot.struct;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Random;
 
@@ -15,15 +14,165 @@ import net.indiespot.struct.runtime.IllegalStackAccessError;
 import net.indiespot.struct.runtime.StructAllocationStack;
 import net.indiespot.struct.runtime.StructGC;
 import net.indiespot.struct.runtime.StructMemory;
+import net.indiespot.struct.runtime.StructThreadLocalStack;
 import net.indiespot.struct.runtime.StructUnsafe;
 import net.indiespot.struct.runtime.SuspiciousFieldAssignmentError;
+import net.indiespot.struct.runtime.StructGC.GcStats;
+import net.indiespot.struct.transform.StructEnv;
 
 public class StructTest {
+	public static class WideHandleTest {
+		public static void test() {
+			ByteBuffer bb = ByteBuffer.allocateDirect(1024);
+			long addr = StructUnsafe.getBufferBaseAddress(bb);
+			System.out.println(addr);
+
+			Vec3 vec0 = Struct.fromPointer(addr);
+			System.out.println(vec0.x);
+			vec0.x = 45.67f;
+			System.out.println(vec0.x);
+			long pntr = Struct.getPointer(vec0);
+			System.out.println(pntr);
+
+			Vec3 vec1 = Struct.fromPointer(addr + 12);
+			vec1.x = 13.37f;
+
+			Vec3[] arr = Struct.fromPointer(addr, 12, 10);
+			System.out.println(arr[0].x);
+			System.out.println(arr[1].x);
+
+			arr = Struct.fromPointer(addr, Struct.sizeof(Vec3.class), 10);
+			System.out.println(arr[0].x);
+			System.out.println(arr[1].x);
+
+			arr = Struct.fromPointer(addr, Vec3.class, 10);
+			System.out.println(arr[0].x);
+			System.out.println(arr[1].x);
+
+			System.out.println(Struct.index(vec0, Vec3.class, 0).x);
+			System.out.println(Struct.index(vec0, Vec3.class, 1).x);
+		}
+	}
+
+	public static class WideHandleParamsLocalsTest {
+		public static void test() {
+			test1(new Vec3(), new Vec3());
+			test2(new Object(), new Vec3(), new Vec3());
+			test3(new Object(), new Vec3(), new Vec3());
+			test4(new Vec3(), new Object(), new Vec3());
+			test5(new Vec3(), new Vec3(), new Object());
+			test6(new Vec3(), new Vec3(), new Object());
+			Vec3 a = test7(new Vec3(), new Vec3(), new Object());
+			Vec3 b = test8(new Vec3(), new Vec3(), new Object());
+			// test8(new Vec3(), new Vec3(), new Vec3());
+			// test4(Struct.nullStruct(Vec3.class), null,
+			// Struct.nullStruct(Vec3.class));
+			test8(new Vec3(), new Vec3(), null);
+			test8(new Vec3(), Struct.nullStruct(Vec3.class), null);
+			// test8(new Vec3(), null, null);
+		}
+
+		public static void test1(Vec3 a, Vec3 b) {
+			Vec3 c = Struct.fromPointer(0L);
+			Vec3 d = Struct.fromPointer(0L);
+		}
+
+		public static void test2(Object obj, Vec3 a, Vec3 b) {
+			Vec3 c = Struct.fromPointer(0L);
+			Vec3 d = Struct.fromPointer(0L);
+		}
+
+		public static void test3(Object obj, Vec3 a, Vec3 b) {
+			long pa = Struct.getPointer(a);
+			long pb = Struct.getPointer(b);
+			assert (pa != pb);
+
+			a = b;
+			assert pb == Struct.getPointer(a);
+			assert pb == Struct.getPointer(b);
+		}
+
+		public static void test4(Vec3 a, Object obj, Vec3 b) {
+			long pa = Struct.getPointer(a);
+			long pb = Struct.getPointer(b);
+			assert (pa != pb);
+
+			a = b;
+			assert pb == Struct.getPointer(a);
+			assert pb == Struct.getPointer(b);
+		}
+
+		public static void test5(Vec3 a, Vec3 b, Object obj) {
+			long pa = Struct.getPointer(a);
+			long pb = Struct.getPointer(b);
+			assert (pa != pb);
+
+			a = b;
+			assert pb == Struct.getPointer(a);
+			assert pb == Struct.getPointer(b);
+		}
+
+		public static void test6(Vec3 a, Vec3 b, Object obj) {
+			long pa = Struct.getPointer(a);
+			long pb = Struct.getPointer(b);
+			assert (pa != pb);
+
+			b = a;
+			assert pa == Struct.getPointer(a);
+			assert pa == Struct.getPointer(b);
+		}
+
+		@TakeStruct
+		public static Vec3 test7(Vec3 a, Vec3 b, Object obj) {
+			return a;
+		}
+
+		@CopyStruct
+		public static Vec3 test8(Vec3 a, Vec3 b, Object obj) {
+			Vec3 c = new Vec3();
+			return c;
+		}
+	}
+
 	public static void main(String[] args) {
+
+		StructGC.addListener(new StructGC.GcInfo() {
+
+			@Override
+			public void onGC(GcStats stats) {
+				System.out.println("LibStruct GC: id=" + stats.runId + ", freed=" + stats.freed + ", remaining=" + stats.remaining + ", collected regions: " + stats.collectedRegionCount + ", took: " + stats.tookNanos / 1000 / 1000 + "ms");
+			}
+
+			@Override
+			public void onStress() {
+				//
+			}
+
+			@Override
+			public void onPanic() {
+				//
+			}
+
+		});
+
+		if (false)
+			TestCollectionAPI.test();
+		if (false)
+			TestDuplicateOverloadedMethod.test();
+
+		if (true) {
+			// TestAllocPerformance.test();
+			//return;
+		}
+
 		TestStructEnv.test();
+		TestSuspiciousFieldAssignment.test();
+		WideHandleTest.test();
+		WideHandleParamsLocalsTest.test();
 
 		if (true) {
 			TestCalloc.test();
+			TestAlignment.test();
 			TestSwap.test();
 
 			TestSizeof.test();
@@ -54,7 +203,7 @@ public class StructTest {
 			TestInstanceMethod.test();
 			TestStructReturnType.test();
 
-			if (StructMemory.CHECK_MEMORY_ACCESS_REGION) {
+			if (StructEnv.SAFETY_FIRST) {
 				try {
 					TestStack.test();
 					throw new IllegalStateException();
@@ -65,68 +214,86 @@ public class StructTest {
 
 			TestStructField.test();
 			TestStructWithStructField.test();
-			TestStructAsObjectParam.test();
+			//
 			TestMalloc.test();
 
 			TestCustomStack.test();
 			TestCopy.test();
 			TestView.test();
 			TestSwitch.test();
-			TestSibling.test();
+			TestIndex.test();
 		}
 
 		// ParticleTestStruct.main(args);
-		// TestMultiThreadedAllocation.test();
+
 		// TestPerformance.test();
-		// TheAgentD.main(args);
-		// TestMalloc.testBlockingQueueProducerConsumer();
+		// TheAgentD.main(args); // TestMultiThreadedAllocation.test();
+		TestMalloc.testBlockingQueueProducerConsumer();
 		// TestAllocPerformance.test();
 
-		TestStructList.test();
-		TestEmbedArray.test();
-		// TestEmbedArray.testPerf();
 		TestEmbedStruct.test();
-		TestSuspiciousFieldAssignment.test();
 		TestFromPointer.test();
-		TestCollectionAPI.test();
 
-		TestEmbeddedArrayUsage.test();
 		TestRealloc.test();
+		TestLargeAlloc.test();
+
+		System.out.println("awaiting gc...");
+		while (StructGC.getHandleCount() != 0) {
+			Thread.yield();
+		}
 
 		System.out.println("done");
-
-		if (false)
-			TestDuplicateOverloadedMethod.test();
 	}
-	
+
+	public static class TestLargeAlloc {
+		public static void test() {
+			int count = Integer.MAX_VALUE / 3 / (Struct.sizeof(Vec3.class) - 2);
+			System.out.println("count=" + count);
+			System.out.println("sizeof=" + Struct.sizeof(Vec3.class));
+			Vec3 base = Struct.mallocArrayBase(Vec3.class, count);
+			for (int i = 1; i < count; i++) {
+				Vec3 v1 = Struct.index(base, Vec3.class, i - 1);
+				Vec3 v2 = Struct.index(base, Vec3.class, i - 0);
+				v2.mul(v1);
+				v1.mul(v2);
+				long p1 = Struct.getPointer(v1);
+				long p2 = Struct.getPointer(v2);
+				assert (p2 - p1) == Struct.sizeof(Vec3.class);
+			}
+			Struct.free(base);
+		}
+	}
+
 	public static class TestRealloc {
 		public static void test() {
-			Vec3[] arr = Struct.malloc(Vec3.class, 13);
+			Vec3[] arr = Struct.mallocArray(Vec3.class, 13);
 			assert arr.length == 13;
-			
+
 			arr[4].x = 13.14f;
 			arr[7].y = 17.13f;
-			
-			arr = Struct.realloc(Vec3.class, arr, 13);
+
+			arr = Struct.reallocArray(Vec3.class, arr, 13);
 			assert arr.length == 13;
 			assert arr[4].x == 13.14f;
 			assert arr[7].y == 17.13f;
-			
-			arr = Struct.realloc(Vec3.class, arr, 5);
+
+			arr = Struct.reallocArray(Vec3.class, arr, 5);
 			assert arr.length == 5;
 			assert arr[4].x == 13.14f;
-			
-			arr = Struct.realloc(Vec3.class, arr, 8);
+
+			arr = Struct.reallocArray(Vec3.class, arr, 8);
 			assert arr.length == 8;
 			assert arr[4].x == 13.14f;
+
+			Struct.free(arr);
 		}
 	}
-	
+
 	public static class TestCollectionAPI {
 		public static void test() {
-			//List< Vec3 > vectors = new ArrayList<>();
-			//List<Object> vectors = new ArrayList<>();
-			//vectors.add(new Vec3());
+			List<Vec3> vectors = new ArrayList<>();
+			// List<Object> vectors = new ArrayList<>();
+			vectors.add(new Vec3());
 		}
 	}
 
@@ -147,8 +314,8 @@ public class StructTest {
 		}
 
 		public static void reassign() {
-			//ArrayEmbed ae = new ArrayEmbed();
-			//ae.iarr = new int[4]; // this will fail
+			// ArrayEmbed ae = new ArrayEmbed();
+			// ae.iarr = new int[4]; // this will fail
 		}
 	}
 
@@ -161,16 +328,6 @@ public class StructTest {
 			assert Struct.getPointer(v1) == (addr + 0 * Struct.sizeof(Vec3.class));
 			assert Struct.getPointer(v2) == (addr + 1 * Struct.sizeof(Vec3.class));
 			bb.clear(); // prevent untimely GC
-		}
-	}
-
-	public static class TestNull2 {
-		public static void test() {
-			Ship ship = new Ship();
-			// ship = null;
-			// ship = Struct.typedNull(Ship.class);
-			ship.id = 0;
-			ship.pos = new Vec3();
 		}
 	}
 
@@ -219,6 +376,9 @@ public class StructTest {
 			} catch (SuspiciousFieldAssignmentError err) {
 				assert true;
 			}
+
+			Struct.free(field);
+			Struct.free(ship);
 		}
 	}
 
@@ -235,30 +395,15 @@ public class StructTest {
 		}
 	}
 
-	public static class TestSibling {
+	public static class TestIndex {
 		public static void test() {
 			Vec3[] arr = new Vec3[123];
 
 			arr[0].set(1.20f, 2.30f, 3.40f);
 			arr[1].set(1.02f, 2.03f, 3.04f);
 
-			assert Struct.sibling(arr[1], Vec3.class, -1) == arr[0];
-			assert Struct.sibling(arr[1], Vec3.class, +1) == arr[2];
-
-			/*
-			 * Vec3 base = arr[0]; for(int m = 0; m < 256; m++) { long t0 =
-			 * System.nanoTime(); float siblingSum = 0.0f; for(int k = 0; k <
-			 * 1024; k++) { for(int i = 0; i < 123; i++) { Vec3 at =
-			 * Struct.sibling(base, Vec3.class, i); siblingSum += at.x; } } long
-			 * t1 = System.nanoTime(); float arrayElemSum = 0.0f; for(int k = 0;
-			 * k < 1024; k++) { for(int i = 0; i < 123; i++) { Vec3 at = arr[i];
-			 * arrayElemSum += at.x; } } long t2 = System.nanoTime();
-			 * 
-			 * System.out.println("siblingSum=" + siblingSum + " (took: " + (t1
-			 * - t0) / 1000 + "us)"); System.out.println("arrayElemSum=" +
-			 * arrayElemSum + " (took: " + (t2 - t1) / 1000 + "us)");
-			 * System.out.println(); }
-			 */
+			assert Struct.index(arr[1], Vec3.class, -1) == arr[0];
+			assert Struct.index(arr[1], Vec3.class, +1) == arr[2];
 		}
 	}
 
@@ -276,82 +421,26 @@ public class StructTest {
 		}
 	}
 
-	public static class TestEmbedArray {
-		public static void test() {
-			ArrayEmbed ae = new ArrayEmbed();
-
-			// test float[]
-			{
-				float[] farr = ae.farr;
-
-				assert farr[0] == 0.0f;
-				assert farr[1] == 0.0f;
-
-				farr[0] = 1.2f;
-				assert farr[0] == 1.2f;
-
-				farr[1] = 3.4f;
-				assert farr[0] == 1.2f;
-				assert farr[1] == 3.4f;
-			}
-
-			// test int[]
-			{
-				int[] iarr = ae.iarr;
-
-				assert iarr[0] == 0;
-				assert iarr[1] == 0;
-
-				iarr[0] = 0;
-				assert iarr[0] == 0;
-
-				iarr[1] = 3;
-				assert iarr[0] == 0;
-				assert iarr[1] == 3;
-
-				iarr[2] = 5;
-				assert iarr[0] == 0;
-				assert iarr[1] == 3;
-				assert iarr[2] == 5;
-			}
-
-			// test double[]
-			{
-				double[] darr = ae.darr;
-
-				assert darr[0] == 0.0;
-				assert darr[1] == 0.0;
-
-				darr[0] = 1.2;
-				assert darr[0] == 1.2;
-
-				darr[1] = 3.4;
-				assert darr[0] == 1.2;
-				assert darr[1] == 3.4;
-			}
-		}
-	}
-
 	public static class TestSwitch {
 		public static void test() {
 			new Vec3();
 
 			switch (4) {
-			case 1:
-				break;
-			case 2:
-				break;
-			case 3:
-				break;
+				case 1:
+					break;
+				case 2:
+					break;
+				case 3:
+					break;
 			}
 
 			switch (4) {
-			case 1003:
-				break;
-			case 2003:
-				break;
-			case 3003:
-				break;
+				case 1003:
+					break;
+				case 2003:
+					break;
+				case 3003:
+					break;
 			}
 		}
 	}
@@ -469,6 +558,9 @@ public class StructTest {
 				for (int i = 0; i < allocCount; i += 100)
 					memoryAllocArrayBulkFree(100);
 				long t7 = System.nanoTime();
+				for (int i = 0; i < allocCount; i += 100)
+					memoryAllocArrayBaseFree(100);
+				long t8 = System.nanoTime();
 
 				long tInstance1 = (tm1 - tm2) / 1000L;
 				long tStackAllocS = (t0 - tm1) / 1000L;
@@ -479,6 +571,7 @@ public class StructTest {
 				long tMemoryAllocAndFree = (t5 - t4) / 1000L;
 				long tMemoryAllocAndFreeArr = (t6 - t5) / 1000L;
 				long tMemoryAllocAndFree2Arr = (t7 - t6) / 1000L;
+				long tMemoryAllocAndFree3Arr = (t8 - t7) / 1000L;
 
 				System.out.println();
 				System.out.println("tInstance1      \t" + tInstance1 / 1000 + "ms \t" + (int) (allocCount / (double) tInstance1) + "M/s");
@@ -490,6 +583,7 @@ public class StructTest {
 				System.out.println("tMemoryAllocFree     \t" + tMemoryAllocAndFree / 1000 + "ms    \t" + (int) (allocCount / (double) tMemoryAllocAndFree) + "M/s");
 				System.out.println("tMemoryAllocFreeArr  \t" + tMemoryAllocAndFreeArr / 1000 + "ms \t" + (int) (allocCount / (double) tMemoryAllocAndFreeArr) + "M/s");
 				System.out.println("tMemoryAllocFreeArr2 \t" + tMemoryAllocAndFree2Arr / 1000 + "ms \t" + (int) (allocCount / (double) tMemoryAllocAndFree2Arr) + "M/s");
+				System.out.println("tMemoryAllocFreeArr3 \t" + tMemoryAllocAndFree3Arr / 1000 + "ms    \t" + (int) (allocCount / (double) tMemoryAllocAndFree3Arr) + "M/s");
 			}
 
 			Struct.discardStructAllocationStack(sas);
@@ -540,55 +634,18 @@ public class StructTest {
 		}
 
 		private static void memoryAllocArray(int n) {
-			for (Vec3 vec : Struct.malloc(Vec3.class, n))
+			for (Vec3 vec : Struct.mallocArray(Vec3.class, n))
 				Struct.free(vec);
 		}
 
 		private static void memoryAllocArrayBulkFree(int n) {
-			Struct.free(Struct.malloc(Vec3.class, n));
-		}
-	}
-
-	public static class TestStructList {
-		public static void test() {
-			VecList list = new VecList(10);
-			for (int i = 0; i < 100; i++)
-				list.add(new Vec3());
+			Struct.free(Struct.mallocArray(Vec3.class, n));
 		}
 
-		public static class VecList {
-			private Vec3[] arr;
-			private int size, cap;
-
-			public VecList() {
-				this(10);
-			}
-
-			public VecList(int cap) {
-				this.cap = cap;
-				arr = Struct.emptyArray(Vec3.class, cap);
-				size = 0;
-			}
-
-			public void add(Vec3 vec) {
-				if (size == cap)
-					this.expand(-1);
-				arr[size++] = vec;
-			}
-
-			public void expand(int minSize) {
-				Vec3[] arr2 = Struct.emptyArray(Vec3.class, Math.max(minSize, cap * 2));
-				for (int i = 0; i < size; i++)
-					arr2[i] = arr[i];
-				arr = arr2;
-				cap = arr.length;
-			}
-
-			public void free() {
-				for (int i = 0; i < size; i++)
-					Struct.free(arr[i]);
-			}
+		private static void memoryAllocArrayBaseFree(int n) {
+			Struct.free(Struct.mallocArrayBase(Vec3.class, n));
 		}
+
 	}
 
 	public static class TestMalloc {
@@ -601,17 +658,17 @@ public class StructTest {
 				Struct.free(vec2);
 			}
 
-			Vec3[] vecs = Struct.malloc(Vec3.class, 7);
+			Vec3[] vecs = Struct.mallocArray(Vec3.class, 7);
 			for (Vec3 vec : vecs) {
 				Struct.free(vec);
 			}
 
-			vecs = Struct.malloc(Vec3.class, 100_000);
+			vecs = Struct.mallocArray(Vec3.class, 100);
 			for (Vec3 vec : vecs) {
 				Struct.free(vec);
 			}
 
-			Struct.free(Struct.malloc(Vec3.class, 100_000));
+			Struct.free(Struct.mallocArray(Vec3.class, 100));
 		}
 
 		private static class Vec3BlockingQueue {
@@ -619,7 +676,7 @@ public class StructTest {
 			private int size;
 
 			public Vec3BlockingQueue(int cap) {
-				queue = Struct.emptyArray(Vec3.class, cap);
+				queue = Struct.nullArray(Vec3.class, cap);
 			}
 
 			public synchronized void push(Vec3 vec) {
@@ -662,7 +719,7 @@ public class StructTest {
 
 					if (size == 0) {
 						if (System.currentTimeMillis() - started > timeout) {
-							return Struct.typedNull(Vec3.class);
+							return Struct.nullStruct(Vec3.class);
 						}
 					}
 				}
@@ -693,23 +750,6 @@ public class StructTest {
 			}
 
 			StructGC.discardThreadLocal();
-
-			StructGC.addListener(new StructGC.GcInfo() {
-				@Override
-				public void onGC(int freedHandles, int remainingHandles, int gcHeaps, int emptyHeaps, long tookNanos) {
-					System.out.println("StructGC: handles freed: " + (freedHandles / 1024) + "K/" + (freedHandles + remainingHandles) / 1024 + "K, empty heaps: " + emptyHeaps + "/" + (emptyHeaps + gcHeaps) + ", collection took: " + (tookNanos / 1_000) + "us");
-				}
-
-				@Override
-				public void onStress() {
-
-				}
-
-				@Override
-				public void onPanic() {
-
-				}
-			});
 
 			try {
 				Thread.sleep(pollTimeout);
@@ -755,26 +795,55 @@ public class StructTest {
 		}
 	}
 
+	public static class TestAlignment {
+		public static void test() {
+			for (int alignment = 4; alignment <= 4096; alignment <<= 1) {
+				Vec3 v1 = Struct.malloc(Vec3.class, alignment);
+				Vec3 v2 = Struct.malloc(Vec3.class, alignment);
+				Vec3 v3 = Struct.malloc(Vec3.class, alignment);
+
+				assert (Struct.getPointer(v1) % alignment == 0);
+				assert (Struct.getPointer(v2) % alignment == 0);
+				assert (Struct.getPointer(v3) % alignment == 0);
+
+				Struct.free(v1);
+				Struct.free(v2);
+				Struct.free(v3);
+			}
+		}
+	}
+
 	public static class TestSizeof {
 		public static void test() {
 			int sizeofVec3 = Struct.sizeof(Vec3.class);
 			int sizeofShip = Struct.sizeof(Ship.class);
 
 			assert (sizeofVec3 == 12);
-			assert (sizeofShip == 8);
+			assert (sizeofShip == 12);
 		}
 	}
 
 	public static class TestStructWithStructField {
 		public static void test() {
 			Ship ship = new Ship();
-			assert (ship.id == 100001);
-			ship.id++;
 			assert (ship.id == 100002);
+			ship.id++;
+			assert (ship.id == 100003);
 			assert (ship.pos == null);
 
-			ship.pos = new Vec3();
+			System.out.println("--");
+			System.out.println("ship @ " + Struct.getPointer(ship));
+			Vec3 pos = Struct.malloc(Vec3.class);
+			System.out.println("pos @ " + Struct.getPointer(pos));
+			ship.pos = pos;
+			System.out.println("pos @ " + Struct.getPointer(pos));
+			System.out.println("ship.pos @ " + Struct.getPointer(ship.pos));
+
 			assert (ship.pos != null);
+			Struct.free(ship.pos);
+			ship.pos = Struct.nullStruct(Vec3.class);
+
+			ship.pos = new Vec3(); // SuspiciousFieldAssignmentError
 		}
 	}
 
@@ -842,95 +911,6 @@ public class StructTest {
 		}
 	}
 
-	public static class TestStructAsObjectParam {
-		public static void test() {
-			Vec3 vec = new Vec3();
-
-			{
-				test(null);
-				test(vec);
-
-				test(null, null);
-				test(null, vec);
-				test(vec, null);
-				test(vec, vec);
-
-				test(null, null, null);
-				test(null, null, vec);
-				test(null, vec, null);
-				test(null, vec, vec);
-				test(vec, null, null);
-				test(vec, null, vec);
-				test(vec, vec, null);
-				test(vec, vec, vec);
-			}
-
-			{
-				test("v");
-				test(vec);
-
-				test("v", "v");
-				test("v", vec);
-				test(vec, "v");
-				test(vec, vec);
-
-				test("v", "v", "v");
-				test("v", "v", vec);
-				test("v", vec, "v");
-				test("v", vec, vec);
-				test(vec, "v", "v");
-				test(vec, "v", vec);
-				test(vec, vec, "v");
-				test(vec, vec, vec);
-			}
-
-			{
-				Vec3 vc3 = new Vec3();
-				test(vc3, vec, vec);
-				test(vc3, vec, vc3);
-				test(vec, vec, vc3);
-
-				vc3 = null;
-				test(vc3, vec, vec);
-				test(vc3, vec, vc3);
-				test(vec, vec, vc3);
-			}
-
-			{
-				// stringify support for last 3 struct params
-				test("v", "v", "v", "v");
-				test("v", "v", "v", vec);
-				test("v", "v", vec, "v");
-				test("v", vec, "v", "v");
-				// test(vec, "v", "v", "v"); // will bark!
-
-				// deterministically null-structs are not stringified
-				vec = null;
-				test("v", "v", "v", "v");
-				test("v", "v", "v", vec);
-				test("v", "v", vec, "v");
-				test("v", vec, "v", "v");
-			}
-
-		}
-
-		private static void test(Object a) {
-			//
-		}
-
-		private static void test(Object a, Object b) {
-			//
-		}
-
-		private static void test(Object a, Object b, Object c) {
-			//
-		}
-
-		private static void test(Object a, Object b, Object c, Object d) {
-			//
-		}
-	}
-
 	public static class TestNull {
 		public static void test() {
 			new Vec3();
@@ -975,13 +955,14 @@ public class StructTest {
 
 		public static void testStatic() {
 			vec2 = Struct.calloc(Vec3.class);
+
 			vec2.x = 12.34f;
 			Vec3 that = vec2;
 			vec2 = that;
 			assert (vec2.x == 12.34f);
 			assert (that.x == 12.34f);
 
-			arr = Struct.malloc(Vec3.class, 13);
+			arr = Struct.mallocArray(Vec3.class, 13);
 		}
 
 		public static void testStatic2() {
@@ -1001,7 +982,7 @@ public class StructTest {
 			int sizeof = 3 << 2;
 			int count = 10;
 			ByteBuffer bb = ByteBuffer.allocateDirect(count * sizeof + alignMargin);
-			StructMemory.alignBufferToWord(bb);
+			StructMemory.alignBuffer(bb, StructMemory.JVMWORD_ALIGNMENT);
 			Vec3[] mapped = Struct.map(Vec3.class, bb);
 			long p1 = Struct.getPointer(mapped[0]);
 			long p2 = Struct.getPointer(mapped[1]);
@@ -1016,7 +997,7 @@ public class StructTest {
 			int sizeof = 3 << 2;
 			int count = 10;
 			ByteBuffer bb = ByteBuffer.allocateDirect(count * sizeof + alignMargin);
-			StructMemory.alignBufferToWord(bb);
+			StructMemory.alignBuffer(bb, StructMemory.JVMWORD_ALIGNMENT);
 			Vec3[] mapped1 = Struct.map(Vec3.class, bb, 24, 0);
 			Vec3[] mapped2 = Struct.map(Vec3.class, bb, 24, 12);
 			{
@@ -1051,12 +1032,12 @@ public class StructTest {
 		public static void test() {
 			Object obj = new Object();
 			Vec3 vec = new Vec3();
-			assert !(vec == null);
-			assert !(obj == null);
 			assert (vec != null);
-			assert (obj != null);
-			assert (vec == vec);
-			assert (obj == obj);
+			// assert (obj != null);
+			// assert !(vec == null);
+			// assert !(obj == null);
+			// assert (vec == vec);
+			// assert (obj == obj);
 		}
 	}
 
@@ -1297,16 +1278,6 @@ public class StructTest {
 		}
 	}
 
-	public static class TestAddress {
-		public static void test() {
-			Vec3 vec = new Vec3();
-			Object obj = new Object();
-
-			// System.out.println("addr=" + Struct.getPointer(vec));
-			// System.out.println("addr=" + Struct.getPointer(obj));
-		}
-	}
-
 	public static class TestInstanceMethod {
 		public static void test() {
 			Vec3 a = new Vec3();
@@ -1358,22 +1329,31 @@ public class StructTest {
 
 	public static class TestStack {
 		public static void test() {
+			StructAllocationStack sas = StructThreadLocalStack.getStack();
+
 			Vec3 vec = new Vec3();
 			vec.x = 1;
+			System.out.println("sas.sa=" + sas.isInvalid(Struct.getPointer(vec)));
 
 			vec = self(vec);
+			System.out.println("sas.se=" + sas.isInvalid(Struct.getPointer(vec)));
 			vec.x = 3;
 			if (vec.y != 13)
 				throw new IllegalStateException();
 
 			vec = copy();
 			vec.x = 4;
+			System.out.println("sas.co=" + sas.isInvalid(Struct.getPointer(vec)));
 			if (vec.y != 14)
 				throw new IllegalStateException();
 
 			vec = pass();
+			System.out.println("sas.pa=" + sas.isInvalid(Struct.getPointer(vec)));
+
+			System.out.println(sas.isOnBlock(Struct.getPointer(vec)));
 			vec.x = 5; // must crash, as the struct is on the part of the stack
-						// that was popped
+			           // that was popped
+			System.out.println("oo");
 			if (vec.y != 15)
 				throw new IllegalStateException();
 		}
@@ -1585,7 +1565,7 @@ public class StructTest {
 		// System.out.println(v);
 	}
 
-	@StructType
+	@StructType(disableClearMemory = true)
 	public static class Vec3 {
 		@StructField
 		public float x;
@@ -1593,7 +1573,6 @@ public class StructTest {
 		public float y;
 		@StructField
 		public float z;
-		public static int aaaaaaah;
 
 		public Vec3() {
 			this(0.0f, 0.0f, 0.0f);
@@ -1638,13 +1617,15 @@ public class StructTest {
 			return this;
 		}
 
-		public static void noob() {
-			// System.out.println("n00b!");
-		}
-
 		@Override
 		public String toString() {
 			return "Vec3[" + x + ", " + y + ", " + z + "]";
+		}
+
+		public static int aaaaaaah;
+
+		public static void noob() {
+			// System.out.println("n00b!");
 		}
 	}
 
@@ -1663,7 +1644,7 @@ public class StructTest {
 
 		@Override
 		public String toString() {
-			return "Ship[id=" + id + ", pos=" + pos + "]";
+			return "Ship[id=" + id + ", pos=" + pos.toString() + "]";
 		}
 	}
 
@@ -1700,21 +1681,6 @@ public class StructTest {
 		@Override
 		public String toString() {
 			return "PosVelView[id=" + id + ", pos=" + pos().toString() + ", vel=" + vel().toString() + "]";
-		}
-	}
-
-	@StructType
-	public static class ArrayEmbed {
-		@StructField(length = 2)
-		public float[] farr;
-		@StructField(length = 15)
-		public int[] iarr;
-		@StructField(length = 2)
-		public double[] darr;
-
-		@Override
-		public String toString() {
-			return "ArrayEmbed[]";
 		}
 	}
 
